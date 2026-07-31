@@ -1,17 +1,20 @@
 """
 Conversión PDF -> Word para la versión móvil (Android) de DocConvert NCTS.
 
-Motor: pdfminer.six + python-docx. Ambos son 100% Python puro (sin extensiones
-en C), lo cual es indispensable en Android: pdf2docx/PyMuPDF (el motor de la
-versión de escritorio) no se puede compilar para el entorno cruzado de
-python-for-android, así que aquí usamos un motor distinto.
+Motor: pypdf + python-docx. Se eligió pypdf en vez de pdfminer.six porque
+pdfminer.six depende de `cryptography` (extensión nativa en Rust/C sin build
+para Android), y en vez de pdf2docx/PyMuPDF (motor de escritorio) porque
+tampoco compila para Android. pypdf no tiene NINGUNA dependencia nativa
+obligatoria, por eso es la única opción que realmente compila en este entorno.
 
-Trade-off que debes conocer: este motor extrae texto por párrafos y hace un
-esfuerzo razonable por detectar saltos de línea/párrafo según posición
-vertical, pero NO reconstruye tablas ni el layout visual exacto del PDF
-original (eso sí lo hace pdf2docx en la versión de escritorio). Para PDFs de
-texto corrido (cartas, reportes, contratos) el resultado es bueno. Para PDFs
-con tablas o diseño complejo, el resultado pierde esa estructura.
+Trade-off que debes conocer: pypdf entrega el texto línea por línea, sin
+información de bloques/párrafos como sí daba pdf2docx o pdfminer. Para
+reconstruir párrafos se usa una heurística simple basada en puntuación
+(si una línea termina en . ! ? : ; se asume fin de párrafo). Funciona bien
+para texto corrido (cartas, reportes, contratos), pero:
+  - No reconstruye tablas como tablas (el contenido aparece como texto suelto).
+  - Puede unir o separar párrafos de forma incorrecta en casos raros
+    (encabezados sin puntuación al final, líneas cortas, etc.).
 """
 
 import os
@@ -21,6 +24,7 @@ from typing import Callable, Optional
 ProgressCallback = Optional[Callable[[str], None]]
 
 _CID_PATTERN = re.compile(r"\(cid:\d+\)")
+_SENTENCE_END = (".", "!", "?", ":", ";")
 
 
 class ConversionError(Exception):
@@ -30,49 +34,57 @@ class ConversionError(Exception):
 def has_selectable_text(input_path: str, sample_pages: int = 3) -> bool:
     """Heurística rápida: revisa si las primeras páginas tienen texto extraíble."""
     try:
-        from pdfminer.high_level import extract_text
-        from pdfminer.pdfpage import PDFPage
+        from pypdf import PdfReader
 
-        with open(input_path, "rb") as f:
-            page_count = 0
-            for _ in PDFPage.get_pages(f):
-                page_count += 1
-                if page_count >= sample_pages:
-                    break
-
-        text = extract_text(input_path, page_numbers=list(range(min(sample_pages, page_count or 1))))
+        reader = PdfReader(input_path)
+        pages_to_check = min(sample_pages, len(reader.pages))
+        text = ""
+        for i in range(pages_to_check):
+            text += reader.pages[i].extract_text() or ""
         return len(text.strip()) > 20
     except Exception:
         return True  # asumir que sí tiene texto y dejar que el motor lo intente
 
 
-def _clean_text(text: str) -> str:
+def _clean_line(line: str) -> str:
     """Limpia artefactos de glifos sin mapeo Unicode (típico en viñetas de PDFs generados)."""
-    text = _CID_PATTERN.sub("", text)
-    return " ".join(text.split())
+    line = _CID_PATTERN.sub("", line)
+    line = line.replace("\x7f", "•")  # viñeta sin mapeo Unicode, común en PDFs generados
+    return " ".join(line.split())
 
 
 def _iter_paragraphs(input_path: str):
     """
-    Recorre el PDF con pdfminer. Cada "caja de texto" (LTTextContainer) que
-    detecta pdfminer corresponde, en la gran mayoría de PDFs generados por
-    procesadores de texto normales, a un párrafo o bloque de texto separado
-    (título, párrafo, celda de tabla, etc.), así que se respeta esa
-    agrupación en vez de reconstruirla manualmente línea por línea.
+    Recorre el PDF con pypdf, línea por línea, y agrupa líneas en párrafos
+    usando una heurística de puntuación: una línea que termina en punto,
+    signo de exclamación/interrogación, o dos puntos, se asume que cierra
+    un párrafo; el resto se van uniendo (para reconstruir párrafos que el
+    PDF partió en varias líneas visuales).
     """
-    from pdfminer.high_level import extract_pages
-    from pdfminer.layout import LTTextContainer
+    from pypdf import PdfReader
 
-    for page_layout in extract_pages(input_path):
-        containers = [
-            el for el in page_layout if isinstance(el, LTTextContainer)
-        ]
-        containers.sort(key=lambda el: el.y0, reverse=True)
+    reader = PdfReader(input_path)
 
-        for container in containers:
-            text = _clean_text(container.get_text())
-            if text:
-                yield text
+    for page in reader.pages:
+        raw_text = page.extract_text() or ""
+        current = []
+
+        for raw_line in raw_text.split("\n"):
+            line = _clean_line(raw_line)
+            if not line:
+                if current:
+                    yield " ".join(current)
+                    current = []
+                continue
+
+            current.append(line)
+
+            if line.endswith(_SENTENCE_END) or line.startswith("•"):
+                yield " ".join(current)
+                current = []
+
+        if current:
+            yield " ".join(current)
 
         yield None  # marcador de fin de página (salto de página en el docx)
 
