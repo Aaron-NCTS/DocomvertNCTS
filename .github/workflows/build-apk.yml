@@ -30,7 +30,13 @@ jobs:
       - name: Instalar Buildozer
         run: |
           pip3 install --upgrade pip
-          pip3 install buildozer cython
+          pip3 install cython
+          pip3 install buildozer
+          # Python 3.14.2 (la versión que python-for-android usa por defecto
+          # en su release más reciente) tiene un bug de compatibilidad con su
+          # propio pip al compilarse para Android. Fijamos una versión anterior
+          # y probada de python-for-android, que compila Python 3.11.5.
+          pip3 install "python-for-android==2024.1.21"
 
       - name: Cachear Android SDK/NDK de Buildozer
         uses: actions/cache@v4
