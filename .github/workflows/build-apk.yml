@@ -13,15 +13,34 @@ jobs:
       - name: Descargar el código
         uses: actions/checkout@v4
 
-      - name: Compilar con Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git python3-dev python3-pip \
+            openjdk-17-jdk unzip zip \
+            libffi-dev libssl-dev \
+            zlib1g-dev
+
+      - name: Instalar Buildozer
+        run: |
+          pip3 install --upgrade pip
+          pip3 install buildozer cython
+
+      - name: Cachear Android SDK/NDK de Buildozer
+        uses: actions/cache@v4
         with:
-          command: buildozer android debug
-          buildozer_version: stable
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-${{ hashFiles('buildozer.spec') }}
+
+      - name: Compilar APK
+        run: |
+          yes | buildozer android debug
 
       - name: Subir el APK como artefacto descargable
         uses: actions/upload-artifact@v4
         with:
           name: DocConvertNCTS-apk
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: bin/*.apk
