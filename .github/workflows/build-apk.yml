@@ -1,5 +1,6 @@
 name: Build APK
 
+# Se ejecuta al hacer push a main, o manualmente desde la pestaña Actions de GitHub.
 on:
   push:
     branches: [ main ]
@@ -7,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Descargar el código
         uses: actions/checkout@v4
