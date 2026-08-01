@@ -1,5 +1,6 @@
 name: Build APK
 
+# Se ejecuta al hacer push a main, o manualmente desde la pestaña Actions de GitHub.
 on:
   push:
     branches: [ main ]
@@ -17,12 +18,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Fijar Java 17 (Gradle/Android Gradle Plugin lo requiere)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: Instalar dependencias del sistema
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential git python3-dev \
-            openjdk-17-jdk unzip zip \
+            unzip zip \
             libffi-dev libssl-dev \
             zlib1g-dev
 
