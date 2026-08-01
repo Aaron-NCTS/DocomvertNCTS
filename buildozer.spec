@@ -8,9 +8,16 @@ source.include_exts = py,png,jpg,kv,atlas
 
 version = 1.0.0
 
-# Dependencias: fitz = PyMuPDF (usado internamente por pdf2docx).
-# python-docx es requerido por pdf2docx para escribir el .docx de salida.
+# pypdf: extracción de texto de PDF (sin dependencias nativas).
+# python-docx: generación del archivo Word de salida.
 requirements = python3,kivy,plyer,pypdf,python-docx,pyjnius
+
+# Buildozer clona su propia copia de python-for-android desde GitHub
+# (ignora la versión instalada por pip). La rama por defecto (master/develop)
+# usa Python 3.14 como intérprete objetivo, que tiene un bug de compatibilidad
+# con su propio pip al compilarse para Android. Fijamos un tag anterior y
+# estable que usa Python 3.11.5.
+p4a.branch = v2024.01.21
 
 orientation = portrait
 fullscreen = 0
