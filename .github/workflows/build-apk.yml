@@ -1,3 +1,51 @@
-El comando AT est† desusado. Use en su lugar schtasks.exe.
+name: Build APK
 
-El identificador de enlace no es v†lido.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Descargar el c√≥digo
+        uses: actions/checkout@v4
+
+      - name: Fijar Python 3.11 (python-for-android no soporta Python 3.14)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git python3-dev \
+            openjdk-17-jdk unzip zip \
+            libffi-dev libssl-dev \
+            zlib1g-dev
+
+      - name: Instalar Buildozer
+        run: |
+          pip3 install --upgrade pip
+          pip3 install cython
+          pip3 install buildozer
+
+      - name: Cachear Android SDK/NDK de Buildozer
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-${{ hashFiles('buildozer.spec') }}
+
+      - name: Compilar APK
+        run: |
+          yes | buildozer android debug
+
+      - name: Subir el APK como artefacto descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocConvertNCTS-apk
+          path: bin/*.apk
