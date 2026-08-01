@@ -8,6 +8,8 @@ compilar el APK).
 """
 
 import os
+import shutil
+import uuid
 from pathlib import Path
 
 try:
@@ -43,6 +45,102 @@ def ensure_permissions(callback=None) -> None:
             callback(all(grants))
 
     request_permissions(REQUIRED_PERMISSIONS, _on_result)
+
+
+def get_display_name(uri_str: str) -> str:
+    """
+    Obtiene el nombre real de un archivo desde un content:// URI, sin copiar
+    su contenido (solo consulta metadatos). Si no es un content:// URI, o
+    algo falla, regresa el último segmento de la ruta como respaldo.
+    """
+    if ON_ANDROID and uri_str.startswith("content://"):
+        try:
+            from jnius import autoclass
+
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            Uri = autoclass("android.net.Uri")
+
+            context = PythonActivity.mActivity
+            resolver = context.getContentResolver()
+            uri = Uri.parse(uri_str)
+
+            cursor = resolver.query(uri, None, None, None, None)
+            if cursor is not None and cursor.moveToFirst():
+                name_index = cursor.getColumnIndex("_display_name")
+                if name_index != -1:
+                    name = cursor.getString(name_index)
+                    cursor.close()
+                    if name:
+                        return name
+                cursor.close()
+        except Exception:
+            pass
+        return "documento.pdf"
+
+    return os.path.basename(uri_str) or "documento.pdf"
+
+
+def resolve_to_local_path(path_or_uri: str, cache_dir: str) -> str:
+    """
+    En Android, el selector de archivos (plyer) puede devolver un URI tipo
+    'content://...' en vez de una ruta de archivo normal (esto pasa cuando
+    Android usa el Storage Access Framework). Python no puede abrir esas
+    rutas directamente con open()/pypdf/python-docx, así que hay que copiar
+    su contenido a un archivo real dentro del almacenamiento de la app.
+
+    En escritorio (o si ya es una ruta de archivo normal), esta función
+    simplemente regresa la misma ruta sin tocar nada.
+    """
+    if not (ON_ANDROID and path_or_uri.startswith("content://")):
+        return path_or_uri
+
+    try:
+        from jnius import autoclass
+
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        Uri = autoclass("android.net.Uri")
+
+        context = PythonActivity.mActivity
+        resolver = context.getContentResolver()
+        uri = Uri.parse(path_or_uri)
+
+        # Intentar recuperar el nombre real del archivo (si no, uno genérico).
+        filename = get_display_name(path_or_uri) or f"{uuid.uuid4().hex}.pdf"
+
+        os.makedirs(cache_dir, exist_ok=True)
+        dest_path = os.path.join(cache_dir, filename)
+
+        FileOutputStream = autoclass("java.io.FileOutputStream")
+        input_stream = resolver.openInputStream(uri)
+        output_stream = FileOutputStream(dest_path)
+        try:
+            buf = bytearray(64 * 1024)
+            n = input_stream.read(buf)
+            while n > 0:
+                output_stream.write(buf, 0, n)
+                n = input_stream.read(buf)
+        finally:
+            input_stream.close()
+            output_stream.close()
+
+        return dest_path
+    except Exception as exc:
+        raise IOError(f"No se pudo leer el archivo seleccionado ({exc})")
+
+
+def temp_cache_dir() -> str:
+    """Carpeta temporal privada de la app para copiar archivos content:// antes de procesarlos."""
+    if ON_ANDROID:
+        try:
+            from android.storage import app_storage_path
+
+            return os.path.join(app_storage_path(), "tmp_input")
+        except Exception:
+            return "/data/local/tmp/docconvertncts_tmp"
+    else:
+        import tempfile
+
+        return os.path.join(tempfile.gettempdir(), "docconvertncts_tmp")
 
 
 def default_output_dir() -> str:

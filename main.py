@@ -15,7 +15,14 @@ from kivy.properties import BooleanProperty, ListProperty, StringProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.popup import Popup
 
-from android_utils import default_output_dir, ensure_permissions, notify_media_scanner
+from android_utils import (
+    default_output_dir,
+    ensure_permissions,
+    get_display_name,
+    notify_media_scanner,
+    resolve_to_local_path,
+    temp_cache_dir,
+)
 from converter import ConversionError, convert_pdf_to_word
 
 Window.clearcolor = (0.97, 0.97, 0.98, 1)
@@ -31,7 +38,7 @@ KV = """
     spacing: dp(10)
     canvas.before:
         Color:
-            rgba: 1, 1, 1, 1
+            rgba: app.card_color
         RoundedRectangle:
             pos: self.pos
             size: self.size
@@ -39,7 +46,7 @@ KV = """
 
     Label:
         text: root.file_name
-        color: 0.1, 0.1, 0.15, 1
+        color: app.text_primary
         halign: "left"
         valign: "middle"
         text_size: self.size
@@ -68,6 +75,12 @@ KV = """
 
 BoxLayout:
     orientation: "vertical"
+    canvas.before:
+        Color:
+            rgba: app.bg_color
+        Rectangle:
+            pos: self.pos
+            size: self.size
 
     # --- Encabezado ---
     BoxLayout:
@@ -76,7 +89,7 @@ BoxLayout:
         padding: dp(18), dp(14)
         canvas.before:
             Color:
-                rgba: 0.11, 0.15, 0.24, 1
+                rgba: app.header_color
             Rectangle:
                 pos: self.pos
                 size: self.size
@@ -96,6 +109,17 @@ BoxLayout:
                 halign: "left"
                 text_size: self.size
                 color: 0.75, 0.8, 0.9, 1
+
+        Button:
+            text: "☾" if not app.dark_mode else "☀"
+            size_hint: None, None
+            size: dp(44), dp(44)
+            pos_hint: {"center_y": 0.5}
+            font_size: "20sp"
+            background_normal: ""
+            background_color: 0, 0, 0, 0
+            color: 1, 1, 1, 1
+            on_release: app.toggle_dark_mode()
 
     # --- Cuerpo ---
     BoxLayout:
@@ -117,7 +141,7 @@ BoxLayout:
             text: "Archivos" if app.files else "Aún no has agregado archivos"
             size_hint_y: None
             height: dp(24)
-            color: 0.3, 0.3, 0.35, 1
+            color: app.text_secondary
             halign: "left"
             text_size: self.size
 
@@ -134,7 +158,7 @@ BoxLayout:
             size_hint_y: None
             height: max(dp(24), self.texture_size[1])
             text_size: self.width, None
-            color: 0.25, 0.25, 0.3, 1
+            color: app.text_secondary
             halign: "left"
             valign: "top"
             font_size: "13sp"
@@ -172,7 +196,7 @@ BoxLayout:
             size_hint_y: None
             height: dp(22)
             font_size: "11sp"
-            color: 0.5, 0.5, 0.55, 1
+            color: app.text_muted
             halign: "left"
             text_size: self.size
 """
@@ -192,9 +216,36 @@ class DocConvertApp(App):
     files = ListProperty([])
     converting = BooleanProperty(False)
     status_text = StringProperty("")
+    dark_mode = BooleanProperty(False)
+
+    bg_color = ListProperty([0.97, 0.97, 0.98, 1])
+    header_color = ListProperty([0.11, 0.15, 0.24, 1])
+    card_color = ListProperty([1, 1, 1, 1])
+    text_primary = ListProperty([0.1, 0.1, 0.15, 1])
+    text_secondary = ListProperty([0.3, 0.3, 0.35, 1])
+    text_muted = ListProperty([0.5, 0.5, 0.55, 1])
+
+    def toggle_dark_mode(self):
+        self.dark_mode = not self.dark_mode
+        if self.dark_mode:
+            self.bg_color = [0.09, 0.09, 0.11, 1]
+            self.header_color = [0.05, 0.07, 0.12, 1]
+            self.card_color = [0.16, 0.16, 0.19, 1]
+            self.text_primary = [0.92, 0.92, 0.94, 1]
+            self.text_secondary = [0.75, 0.75, 0.78, 1]
+            self.text_muted = [0.55, 0.55, 0.58, 1]
+        else:
+            self.bg_color = [0.97, 0.97, 0.98, 1]
+            self.header_color = [0.11, 0.15, 0.24, 1]
+            self.card_color = [1, 1, 1, 1]
+            self.text_primary = [0.1, 0.1, 0.15, 1]
+            self.text_secondary = [0.3, 0.3, 0.35, 1]
+            self.text_muted = [0.5, 0.5, 0.55, 1]
+        Window.clearcolor = tuple(self.bg_color)
 
     def build(self):
         self.rows = {}
+        self.display_names = {}
         self.output_dir = None
         root = Builder.load_string(KV)
         return root
@@ -235,10 +286,15 @@ class DocConvertApp(App):
             return
         added = 0
         for path in selection:
-            if path.lower().endswith(".pdf") and path not in self.files:
-                self.files.append(path)
-                self._add_row(path)
-                added += 1
+            if path in self.files:
+                continue
+            # No filtramos por ".pdf" en el string: en Android, el selector
+            # puede devolver un content:// URI que no tiene extensión visible
+            # (el filtro de tipo de archivo ya lo aplicó el propio selector).
+            self.files.append(path)
+            self.display_names[path] = get_display_name(path)
+            self._add_row(path)
+            added += 1
         if added:
             self.status_text = f"{added} archivo(s) agregado(s)."
 
@@ -247,13 +303,14 @@ class DocConvertApp(App):
 
         row = Factory.FileRow()
         row.file_path = path
-        row.file_name = Path(path).name
+        row.file_name = self.display_names.get(path, Path(path).name)
         self.rows[path] = row
         self.root.ids.file_list.add_widget(row)
 
     def remove_file(self, path):
         if path in self.files:
             self.files.remove(path)
+        self.display_names.pop(path, None)
         row = self.rows.pop(path, None)
         if row:
             self.root.ids.file_list.remove_widget(row)
@@ -285,28 +342,34 @@ class DocConvertApp(App):
         output_dir = self.output_dir or default_output_dir()
 
         for index, path in enumerate(list(self.files)):
-            name = Path(path).stem
-            output_path = os.path.join(output_dir, f"{name}.docx")
+            display_name = self.display_names.get(path, Path(path).name)
+            name_without_ext = Path(display_name).stem or "documento"
+            output_path = os.path.join(output_dir, f"{name_without_ext}.docx")
 
             self._update_row_status(path, "Convirtiendo...", (0.16, 0.45, 0.85, 1))
-            self._set_status(f"Convirtiendo: {Path(path).name}")
+            self._set_status(f"Convirtiendo: {display_name}")
 
             try:
+                # En Android, "path" puede ser un content:// URI que Python no
+                # puede abrir directamente; hay que copiarlo primero a un
+                # archivo real dentro del almacenamiento de la app.
+                local_path = resolve_to_local_path(path, temp_cache_dir())
+
                 convert_pdf_to_word(
-                    path,
+                    local_path,
                     output_path,
-                    progress_cb=lambda msg, p=path: self._set_status(f"{Path(p).name}: {msg}"),
+                    progress_cb=lambda msg, p=display_name: self._set_status(f"{p}: {msg}"),
                 )
                 notify_media_scanner(output_path)
                 self._update_row_status(path, "Completado", (0.2, 0.6, 0.3, 1))
                 completed += 1
             except ConversionError as exc:
                 self._update_row_status(path, "Error", (0.8, 0.2, 0.2, 1))
-                self._show_error(Path(path).name, str(exc))
+                self._show_error(display_name, str(exc))
                 errored += 1
             except Exception as exc:
                 self._update_row_status(path, "Error", (0.8, 0.2, 0.2, 1))
-                self._show_error(Path(path).name, f"Error inesperado: {exc}")
+                self._show_error(display_name, f"Error inesperado: {exc}")
                 errored += 1
 
             self._advance_progress(index + 1)
