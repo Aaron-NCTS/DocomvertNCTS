@@ -10,7 +10,7 @@ version = 1.0.0
 
 # Dependencias: fitz = PyMuPDF (usado internamente por pdf2docx).
 # python-docx es requerido por pdf2docx para escribir el .docx de salida.
-requirements = python3,kivy,plyer,pdfminer.six,python-docx,pyjnius
+requirements = python3,kivy,plyer,pypdf,python-docx,pyjnius
 
 orientation = portrait
 fullscreen = 0
