@@ -8,6 +8,26 @@ Android.
 Todo el procesamiento ocurre en el propio dispositivo: no se sube ningún
 archivo a internet.
 
+## Motor de conversión: pypdf (no pdf2docx ni pdfminer.six)
+
+La versión de escritorio usa `pdf2docx` (que depende de `pymupdf`/PyMuPDF).
+**Esa combinación no compila para Android**: PyMuPDF es una librería en C
+sin "receta" de compilación cruzada en python-for-android. Se intentó
+también `pdfminer.six`, pero depende de `cryptography` (extensión nativa en
+Rust/C sin build para Android), así que tampoco compila.
+
+La versión móvil usa **`pypdf` + `python-docx`**, ambos sin ninguna
+dependencia nativa obligatoria — la única combinación que realmente compila
+en este entorno. Trade-off que debes conocer: `pypdf` entrega el texto
+línea por línea (no por bloques/párrafos), así que los párrafos se
+reconstruyen con una heurística de puntuación (una línea que termina en
+`. ! ? : ;` se asume que cierra un párrafo). Esto funciona bien para texto
+corrido (cartas, reportes, contratos), pero:
+- No reconstruye tablas como tablas (el contenido de cada celda aparece
+  como texto suelto, en orden de lectura).
+- Títulos/encabezados sin punto final pueden quedar unidos al párrafo
+  siguiente en vez de separados.
+
 ## 1. Probar en tu PC antes de compilar (recomendado)
 
 ```bash
@@ -21,8 +41,50 @@ así ahorras tiempo si algo necesita ajuste.
 
 ## 2. Compilar el APK
 
-Buildozer **solo corre en Linux** (o WSL en Windows). Si estás en Windows,
-usa WSL2 con Ubuntu.
+Tienes dos caminos: **GitHub Actions (recomendado si no tienes WSL)** o **Buildozer local en Linux/WSL**.
+
+### 2.A Compilar en la nube con GitHub Actions (no necesitas WSL)
+
+El proyecto ya incluye `.github/workflows/build-apk.yml`, que compila el APK
+automáticamente en los servidores de GitHub cada vez que subes cambios.
+
+**Paso 1 — Sube el proyecto a GitHub** (desde PowerShell, dentro de la carpeta
+`DocConvertMobile`):
+
+```powershell
+cd C:\Users\nytan\Downloads\DocConvertMobile
+git init
+git add .
+git commit -m "Primera versión de DocConvert NCTS móvil"
+git branch -M main
+```
+
+Crea un repo vacío en https://github.com/new (por ejemplo `DocConvertMobile`,
+puede ser privado), luego:
+
+```powershell
+git remote add origin https://github.com/TU-USUARIO/DocConvertMobile.git
+git push -u origin main
+```
+
+**Paso 2 — Ver la compilación:**
+
+1. Entra a tu repo en GitHub → pestaña **Actions**.
+2. Verás el workflow "Build APK" corriendo (tarda 15-30 min la primera vez).
+3. Cuando termine en verde, entra a esa ejecución y baja hasta **Artifacts**.
+4. Descarga `DocConvertNCTS-apk` — es un `.zip` que contiene el `.apk` dentro.
+
+**Paso 3 — Instalar en tu celular:** copia el `.apk` a tu teléfono (por USB,
+Drive, WhatsApp a ti mismo, etc.) y ábrelo. Android pedirá permitir
+"instalar apps de fuentes desconocidas" la primera vez.
+
+Cada vez que quieras una nueva versión: haz cambios, `git add .`,
+`git commit`, `git push`, y espera a que Actions termine.
+
+### 2.B Compilar localmente con Buildozer (Linux o WSL)
+
+Buildozer **solo corre en Linux** (o WSL2 en Windows).
+
 
 ### 2.1 Instalar Buildozer y dependencias del sistema
 

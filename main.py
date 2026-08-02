@@ -19,8 +19,11 @@ from kivy.uix.popup import Popup
 from android_utils import (
     default_output_dir,
     ensure_permissions,
+    format_file_size,
     get_display_name,
+    get_file_size,
     notify_media_scanner,
+    open_file_external,
     resolve_to_local_path,
     temp_cache_dir,
 )
@@ -53,11 +56,11 @@ KV = """
 #:import dp kivy.metrics.dp
 
 <FileRow@BoxLayout>:
-    orientation: "horizontal"
+    orientation: "vertical"
     size_hint_y: None
-    height: dp(56)
-    padding: dp(10), dp(6)
-    spacing: dp(10)
+    height: dp(72)
+    padding: dp(10), dp(8)
+    spacing: dp(4)
     canvas.before:
         Color:
             rgba: app.card_color
@@ -66,34 +69,67 @@ KV = """
             size: self.size
             radius: [dp(10)]
 
-    Label:
-        text: root.file_name
-        color: app.text_primary
-        halign: "left"
-        valign: "middle"
-        text_size: self.size
-        shorten: True
-        shorten_from: "right"
+    BoxLayout:
+        orientation: "horizontal"
+        size_hint_y: None
+        height: dp(22)
+        spacing: dp(8)
 
-    Label:
-        id: status_label
-        text: root.status_text
-        color: root.status_color
-        size_hint_x: None
-        width: dp(110)
-        halign: "right"
-        valign: "middle"
-        text_size: self.size
+        Label:
+            text: root.file_name
+            color: app.text_primary
+            halign: "left"
+            valign: "middle"
+            text_size: self.size
+            shorten: True
+            shorten_from: "right"
 
-    Button:
-        text: "x"
-        size_hint_x: None
-        width: dp(44)
-        font_size: "16sp"
-        background_normal: ""
-        background_color: 0.85, 0.3, 0.3, 1
-        color: 1, 1, 1, 1
-        on_release: root.on_remove(root.file_path)
+        Label:
+            text: root.file_size
+            color: app.text_muted
+            size_hint_x: None
+            width: dp(60)
+            font_size: "11sp"
+            halign: "right"
+            valign: "middle"
+            text_size: self.size
+
+    BoxLayout:
+        orientation: "horizontal"
+        size_hint_y: None
+        height: dp(34)
+        spacing: dp(8)
+
+        Label:
+            id: status_label
+            text: root.status_text
+            color: root.status_color
+            halign: "left"
+            valign: "middle"
+            text_size: self.size
+            font_size: "12sp"
+
+        Button:
+            text: "Abrir"
+            size_hint_x: None
+            width: dp(64)
+            font_size: "12sp"
+            opacity: 1 if root.output_path else 0
+            disabled: not root.output_path
+            background_normal: ""
+            background_color: 0.2, 0.55, 0.35, 1
+            color: 1, 1, 1, 1
+            on_release: root.on_open()
+
+        Button:
+            text: "x"
+            size_hint_x: None
+            width: dp(40)
+            font_size: "14sp"
+            background_normal: ""
+            background_color: 0.85, 0.3, 0.3, 1
+            color: 1, 1, 1, 1
+            on_release: root.on_remove(root.file_path)
 
 BoxLayout:
     orientation: "vertical"
@@ -229,11 +265,17 @@ BoxLayout:
 class FileRow(BoxLayout):
     file_path = StringProperty("")
     file_name = StringProperty("")
+    file_size = StringProperty("")
+    output_path = StringProperty("")
     status_text = StringProperty("Pendiente")
     status_color = ListProperty([0.5, 0.5, 0.5, 1])
 
     def on_remove(self, path):
         App.get_running_app().remove_file(path)
+
+    def on_open(self):
+        if self.output_path:
+            App.get_running_app().open_output_file(self.output_path)
 
 
 class DocConvertApp(App):
@@ -316,6 +358,7 @@ class DocConvertApp(App):
     def build(self):
         self.rows = {}
         self.display_names = {}
+        self.output_paths = {}
         self.output_dir = None
         root = Builder.load_string(KV)
         return root
@@ -374,6 +417,7 @@ class DocConvertApp(App):
         row = Factory.FileRow()
         row.file_path = path
         row.file_name = self.display_names.get(path, Path(path).name)
+        row.file_size = format_file_size(get_file_size(path))
         self.rows[path] = row
         self.root.ids.file_list.add_widget(row)
 
@@ -381,6 +425,7 @@ class DocConvertApp(App):
         if path in self.files:
             self.files.remove(path)
         self.display_names.pop(path, None)
+        self.output_paths.pop(path, None)
         row = self.rows.pop(path, None)
         if row:
             self.root.ids.file_list.remove_widget(row)
@@ -410,44 +455,59 @@ class DocConvertApp(App):
     def _convert_worker(self):
         completed = 0
         errored = 0
-        output_dir = self.output_dir or default_output_dir()
-        out_ext = MODE_INFO[self.mode]["out_ext"]
+        output_dir = ""
 
-        for index, path in enumerate(list(self.files)):
-            display_name = self.display_names.get(path, Path(path).name)
-            name_without_ext = Path(display_name).stem or "documento"
-            output_path = os.path.join(output_dir, f"{name_without_ext}{out_ext}")
+        # IMPORTANTE: todo el cuerpo va envuelto en try/finally. Antes, si
+        # algo fallaba en la preparación (antes de llegar al try interno de
+        # cada archivo), el hilo moría en silencio y _finish() nunca se
+        # llamaba -> la app se quedaba congelada para siempre mostrando
+        # "Iniciando conversión...". Ahora, pase lo que pase, _finish()
+        # siempre se ejecuta al final.
+        try:
+            output_dir = self.output_dir or default_output_dir()
+            out_ext = MODE_INFO[self.mode]["out_ext"]
 
-            self._update_row_status(path, "Convirtiendo...", (0.16, 0.45, 0.85, 1))
-            self._set_status(f"Convirtiendo: {display_name}")
+            for index, path in enumerate(list(self.files)):
+                try:
+                    display_name = self.display_names.get(path, Path(path).name)
+                    name_without_ext = Path(display_name).stem or "documento"
+                    output_path = os.path.join(output_dir, f"{name_without_ext}{out_ext}")
 
-            try:
-                # En Android, "path" puede ser un content:// URI que Python no
-                # puede abrir directamente; hay que copiarlo primero a un
-                # archivo real dentro del almacenamiento de la app.
-                local_path = resolve_to_local_path(path, temp_cache_dir())
+                    self._update_row_status(path, "Convirtiendo...", (0.16, 0.45, 0.85, 1))
+                    self._set_status(f"Convirtiendo: {display_name}")
 
-                progress_cb = lambda msg, p=display_name: self._set_status(f"{p}: {msg}")
-                if self.mode == MODE_PDF_TO_WORD:
-                    convert_pdf_to_word(local_path, output_path, progress_cb=progress_cb)
-                else:
-                    convert_word_to_pdf(local_path, output_path, progress_cb=progress_cb)
+                    # En Android, "path" puede ser un content:// URI que Python
+                    # no puede abrir directamente; hay que copiarlo primero a
+                    # un archivo real dentro del almacenamiento de la app.
+                    local_path = resolve_to_local_path(path, temp_cache_dir())
 
-                notify_media_scanner(output_path)
-                self._update_row_status(path, "Completado", (0.2, 0.6, 0.3, 1))
-                completed += 1
-            except ConversionError as exc:
-                self._update_row_status(path, "Error", (0.8, 0.2, 0.2, 1))
-                self._show_error(display_name, str(exc))
-                errored += 1
-            except Exception as exc:
-                self._update_row_status(path, "Error", (0.8, 0.2, 0.2, 1))
-                self._show_error(display_name, f"Error inesperado: {exc}")
-                errored += 1
+                    progress_cb = lambda msg, p=display_name: self._set_status(f"{p}: {msg}")
+                    if self.mode == MODE_PDF_TO_WORD:
+                        convert_pdf_to_word(local_path, output_path, progress_cb=progress_cb)
+                    else:
+                        convert_word_to_pdf(local_path, output_path, progress_cb=progress_cb)
 
-            self._advance_progress(index + 1)
-
-        self._finish(completed, errored, output_dir)
+                    notify_media_scanner(output_path)
+                    self.output_paths[path] = output_path
+                    self._update_row_output(path, output_path)
+                    self._update_row_status(path, "Completado", (0.2, 0.6, 0.3, 1))
+                    completed += 1
+                except ConversionError as exc:
+                    self._update_row_status(path, "Error", (0.8, 0.2, 0.2, 1))
+                    self._show_error(display_name, str(exc))
+                    errored += 1
+                except Exception as exc:
+                    self._update_row_status(path, "Error", (0.8, 0.2, 0.2, 1))
+                    self._show_error(display_name, f"Error inesperado: {exc}")
+                    errored += 1
+                finally:
+                    self._advance_progress(index + 1)
+        except Exception as exc:
+            # Resguardo final: cualquier error no previsto en la preparación
+            # (antes del bucle) se reporta en vez de dejar la app congelada.
+            self._set_status(f"Error inesperado durante la conversión: {exc}")
+        finally:
+            self._finish(completed, errored, output_dir)
 
     @mainthread
     def _update_row_status(self, path, text, color):
@@ -455,6 +515,28 @@ class DocConvertApp(App):
         if row:
             row.status_text = text
             row.status_color = list(color)
+
+    @mainthread
+    def _update_row_output(self, path, output_path):
+        row = self.rows.get(path)
+        if row:
+            row.output_path = output_path
+
+    def open_output_file(self, output_path):
+        if not output_path or not os.path.isfile(output_path):
+            self._show_info("Ese archivo ya no está disponible (¿se movió o se borró?).")
+            return
+        opened = open_file_external(output_path)
+        if not opened:
+            self._show_info(f"Archivo guardado en:\n{output_path}")
+
+    @mainthread
+    def _show_info(self, message):
+        from kivy.uix.label import Label
+
+        popup = Popup(title="DocConvert NCTS", size_hint=(0.85, 0.35))
+        popup.content = Label(text=message, text_size=(Window.width * 0.7, None))
+        popup.open()
 
     @mainthread
     def _set_status(self, text):
