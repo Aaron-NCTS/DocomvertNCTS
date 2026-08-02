@@ -174,11 +174,39 @@ def format_file_size(num_bytes) -> str:
     return f"{size:.1f} GB"
 
 
+def _mime_for(file_path: str) -> str:
+    if file_path.lower().endswith(".pdf"):
+        return "application/pdf"
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _build_shareable_uri(context, file_path: str):
+    """
+    Devuelve (uri, grant_flag) usando FileProvider si está disponible (necesario
+    en Android 7+ para compartir/abrir archivos entre apps), o un URI de
+    archivo directo como respaldo (solo funciona de forma confiable en
+    versiones viejas de Android).
+    """
+    from jnius import autoclass
+
+    Intent = autoclass("android.content.Intent")
+    Uri = autoclass("android.net.Uri")
+    JavaFile = autoclass("java.io.File")
+
+    file_obj = JavaFile(file_path)
+    try:
+        FileProvider = autoclass("androidx.core.content.FileProvider")
+        authority = context.getPackageName() + ".fileprovider"
+        uri = FileProvider.getUriForFile(context, authority, file_obj)
+        return uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+    except Exception:
+        return Uri.fromFile(file_obj), 0
+
+
 def open_file_external(file_path: str) -> bool:
     """
     Intenta abrir el archivo convertido con la app asociada de Android (ej.
-    un visor de Word/PDF), usando FileProvider para generar un content:// URI
-    (requerido en Android 7+ para compartir archivos entre apps).
+    un visor de Word/PDF).
 
     Devuelve True si se pudo lanzar el intent, False si no (en cuyo caso
     quien llama debe mostrar la ubicación del archivo como alternativa,
@@ -190,37 +218,61 @@ def open_file_external(file_path: str) -> bool:
         from jnius import autoclass
 
         Intent = autoclass("android.content.Intent")
-        Uri = autoclass("android.net.Uri")
-        JavaFile = autoclass("java.io.File")
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
-
         context = PythonActivity.mActivity
-        file_obj = JavaFile(file_path)
 
-        grant_flag = 0
-        try:
-            FileProvider = autoclass("androidx.core.content.FileProvider")
-            authority = context.getPackageName() + ".fileprovider"
-            uri = FileProvider.getUriForFile(context, authority, file_obj)
-            grant_flag = Intent.FLAG_GRANT_READ_URI_PERMISSION
-        except Exception:
-            # Sin FileProvider configurado en el manifest: en Android <24
-            # esto puede funcionar igual con un URI de archivo directo.
-            uri = Uri.fromFile(file_obj)
-
-        mime = (
-            "application/pdf"
-            if file_path.lower().endswith(".pdf")
-            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+        uri, grant_flag = _build_shareable_uri(context, file_path)
 
         intent = Intent(Intent.ACTION_VIEW)
-        intent.setDataAndType(uri, mime)
+        intent.setDataAndType(uri, _mime_for(file_path))
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | grant_flag)
         context.startActivity(intent)
         return True
     except Exception:
         return False
+
+
+def share_file_external(file_path: str) -> bool:
+    """Abre el selector de 'Compartir' de Android (WhatsApp, Gmail, Drive, etc.) con el archivo."""
+    if not ON_ANDROID:
+        return False
+    try:
+        from jnius import autoclass
+
+        Intent = autoclass("android.content.Intent")
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        context = PythonActivity.mActivity
+
+        uri, grant_flag = _build_shareable_uri(context, file_path)
+
+        intent = Intent(Intent.ACTION_SEND)
+        intent.setType(_mime_for(file_path))
+        intent.putExtra(Intent.EXTRA_STREAM, uri)
+        intent.setFlags(grant_flag)
+        chooser = Intent.createChooser(intent, "Compartir documento")
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(chooser)
+        return True
+    except Exception:
+        return False
+
+
+def cleanup_temp_file(file_path: str, cache_dir: str) -> None:
+    """
+    Borra un archivo temporal creado por resolve_to_local_path (copia de un
+    content:// URI), siempre y cuando esté dentro de la carpeta temporal de
+    la app -- nunca borra archivos originales del usuario.
+    """
+    try:
+        if file_path and os.path.isfile(file_path):
+            if os.path.abspath(os.path.dirname(file_path)) == os.path.abspath(cache_dir):
+                os.remove(file_path)
+    except Exception:
+        pass
+
+
+MAX_FILE_SIZE_MB = 25
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
 
 def temp_cache_dir() -> str:
