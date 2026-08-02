@@ -1,6 +1,6 @@
 """
 DocConvert NCTS - Móvil
-Convierte PDF -> Word directamente en tu Android, sin subir archivos a internet.
+Convierte PDF <-> Word directamente en tu Android, sin subir archivos a internet.
 """
 
 import os
@@ -13,6 +13,7 @@ from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.properties import BooleanProperty, ListProperty, StringProperty
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.dropdown import DropDown
 from kivy.uix.popup import Popup
 
 from android_utils import (
@@ -24,8 +25,29 @@ from android_utils import (
     temp_cache_dir,
 )
 from converter import ConversionError, convert_pdf_to_word
+from word_converter import convert_word_to_pdf
 
 Window.clearcolor = (0.97, 0.97, 0.98, 1)
+
+MODE_PDF_TO_WORD = "pdf_to_word"
+MODE_WORD_TO_PDF = "word_to_pdf"
+
+MODE_INFO = {
+    MODE_PDF_TO_WORD: {
+        "subtitle": "PDF -> Word, 100% local",
+        "select_label": "Seleccionar PDF(s)",
+        "filters": [("Documentos PDF", "*.pdf")],
+        "out_ext": ".docx",
+        "empty_hint": "Aún no has agregado archivos PDF",
+    },
+    MODE_WORD_TO_PDF: {
+        "subtitle": "Word -> PDF, 100% local",
+        "select_label": "Seleccionar Word (.docx)",
+        "filters": [("Documentos Word", "*.docx")],
+        "out_ext": ".pdf",
+        "empty_hint": "Aún no has agregado archivos Word",
+    },
+}
 
 KV = """
 #:import dp kivy.metrics.dp
@@ -104,22 +126,24 @@ BoxLayout:
                 text_size: self.size
                 color: 1, 1, 1, 1
             Label:
-                text: "PDF -> Word, 100% local"
+                text: app.mode_subtitle
                 font_size: "13sp"
                 halign: "left"
                 text_size: self.size
                 color: 0.75, 0.8, 0.9, 1
 
         Button:
-            text: "☾" if not app.dark_mode else "☀"
+            id: menu_button
+            text: "⋮"
             size_hint: None, None
             size: dp(44), dp(44)
             pos_hint: {"center_y": 0.5}
-            font_size: "20sp"
+            font_size: "22sp"
+            bold: True
             background_normal: ""
             background_color: 0, 0, 0, 0
             color: 1, 1, 1, 1
-            on_release: app.toggle_dark_mode()
+            on_release: app.open_main_menu(self)
 
     # --- Cuerpo ---
     BoxLayout:
@@ -128,7 +152,7 @@ BoxLayout:
         spacing: dp(12)
 
         Button:
-            text: "Seleccionar PDF(s)"
+            text: app.mode_select_label
             size_hint_y: None
             height: dp(52)
             background_normal: ""
@@ -138,7 +162,7 @@ BoxLayout:
             on_release: app.open_file_chooser()
 
         Label:
-            text: "Archivos" if app.files else "Aún no has agregado archivos"
+            text: "Archivos" if app.files else app.mode_empty_hint
             size_hint_y: None
             height: dp(24)
             color: app.text_secondary
@@ -217,6 +241,11 @@ class DocConvertApp(App):
     converting = BooleanProperty(False)
     status_text = StringProperty("")
     dark_mode = BooleanProperty(False)
+    mode = StringProperty(MODE_PDF_TO_WORD)
+
+    mode_subtitle = StringProperty(MODE_INFO[MODE_PDF_TO_WORD]["subtitle"])
+    mode_select_label = StringProperty(MODE_INFO[MODE_PDF_TO_WORD]["select_label"])
+    mode_empty_hint = StringProperty(MODE_INFO[MODE_PDF_TO_WORD]["empty_hint"])
 
     bg_color = ListProperty([0.97, 0.97, 0.98, 1])
     header_color = ListProperty([0.11, 0.15, 0.24, 1])
@@ -225,6 +254,7 @@ class DocConvertApp(App):
     text_secondary = ListProperty([0.3, 0.3, 0.35, 1])
     text_muted = ListProperty([0.5, 0.5, 0.55, 1])
 
+    # ------------------------------------------------------------- Tema
     def toggle_dark_mode(self):
         self.dark_mode = not self.dark_mode
         if self.dark_mode:
@@ -243,6 +273,46 @@ class DocConvertApp(App):
             self.text_muted = [0.5, 0.5, 0.55, 1]
         Window.clearcolor = tuple(self.bg_color)
 
+    # --------------------------------------------------------- Menú (⋮)
+    def open_main_menu(self, anchor_widget):
+        from kivy.uix.button import Button
+
+        dropdown = DropDown(auto_width=False, width=Window.width * 0.7)
+
+        def item(text, callback):
+            btn = Button(
+                text=text,
+                size_hint_y=None,
+                height="46dp",
+                background_normal="",
+                background_color=(1, 1, 1, 1) if not self.dark_mode else (0.2, 0.2, 0.23, 1),
+                color=(0.1, 0.1, 0.15, 1) if not self.dark_mode else (0.9, 0.9, 0.92, 1),
+                halign="left",
+            )
+            btn.bind(on_release=lambda *_: (dropdown.dismiss(), callback()))
+            dropdown.add_widget(btn)
+
+        theme_label = "Cambiar a modo claro" if self.dark_mode else "Cambiar a modo oscuro"
+        item(theme_label, self.toggle_dark_mode)
+
+        if self.mode == MODE_PDF_TO_WORD:
+            item("Cambiar a: Word -> PDF", lambda: self.set_mode(MODE_WORD_TO_PDF))
+        else:
+            item("Cambiar a: PDF -> Word", lambda: self.set_mode(MODE_PDF_TO_WORD))
+
+        dropdown.open(anchor_widget)
+
+    def set_mode(self, new_mode):
+        if self.converting or new_mode == self.mode:
+            return
+        self.mode = new_mode
+        info = MODE_INFO[new_mode]
+        self.mode_subtitle = info["subtitle"]
+        self.mode_select_label = info["select_label"]
+        self.mode_empty_hint = info["empty_hint"]
+        self.clear_files()
+
+    # ------------------------------------------------------------ Setup
     def build(self):
         self.rows = {}
         self.display_names = {}
@@ -276,7 +346,7 @@ class DocConvertApp(App):
             filechooser.open_file(
                 on_selection=self._on_files_selected,
                 multiple=True,
-                filters=[("Documentos PDF", "*.pdf")],
+                filters=MODE_INFO[self.mode]["filters"],
             )
         except Exception as exc:
             self.status_text = f"No se pudo abrir el selector de archivos: {exc}"
@@ -288,9 +358,9 @@ class DocConvertApp(App):
         for path in selection:
             if path in self.files:
                 continue
-            # No filtramos por ".pdf" en el string: en Android, el selector
-            # puede devolver un content:// URI que no tiene extensión visible
-            # (el filtro de tipo de archivo ya lo aplicó el propio selector).
+            # No filtramos por extensión en el string: en Android, el
+            # selector puede devolver un content:// URI que no tiene
+            # extensión visible (el filtro de tipo ya lo aplicó el selector).
             self.files.append(path)
             self.display_names[path] = get_display_name(path)
             self._add_row(path)
@@ -321,7 +391,8 @@ class DocConvertApp(App):
         for path in list(self.files):
             self.remove_file(path)
         self.status_text = ""
-        self.root.ids.progress_bar.value = 0
+        if self.root:
+            self.root.ids.progress_bar.value = 0
 
     # -------------------------------------------------------- Conversión
     def start_conversion(self):
@@ -340,11 +411,12 @@ class DocConvertApp(App):
         completed = 0
         errored = 0
         output_dir = self.output_dir or default_output_dir()
+        out_ext = MODE_INFO[self.mode]["out_ext"]
 
         for index, path in enumerate(list(self.files)):
             display_name = self.display_names.get(path, Path(path).name)
             name_without_ext = Path(display_name).stem or "documento"
-            output_path = os.path.join(output_dir, f"{name_without_ext}.docx")
+            output_path = os.path.join(output_dir, f"{name_without_ext}{out_ext}")
 
             self._update_row_status(path, "Convirtiendo...", (0.16, 0.45, 0.85, 1))
             self._set_status(f"Convirtiendo: {display_name}")
@@ -355,11 +427,12 @@ class DocConvertApp(App):
                 # archivo real dentro del almacenamiento de la app.
                 local_path = resolve_to_local_path(path, temp_cache_dir())
 
-                convert_pdf_to_word(
-                    local_path,
-                    output_path,
-                    progress_cb=lambda msg, p=display_name: self._set_status(f"{p}: {msg}"),
-                )
+                progress_cb = lambda msg, p=display_name: self._set_status(f"{p}: {msg}")
+                if self.mode == MODE_PDF_TO_WORD:
+                    convert_pdf_to_word(local_path, output_path, progress_cb=progress_cb)
+                else:
+                    convert_word_to_pdf(local_path, output_path, progress_cb=progress_cb)
+
                 notify_media_scanner(output_path)
                 self._update_row_status(path, "Completado", (0.2, 0.6, 0.3, 1))
                 completed += 1

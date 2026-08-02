@@ -10,7 +10,7 @@ version = 1.0.0
 
 # pypdf: extracción de texto de PDF (sin dependencias nativas).
 # python-docx: generación del archivo Word de salida.
-requirements = python3,kivy,plyer,pypdf,python-docx,pyjnius
+requirements = python3,kivy,plyer,pypdf,python-docx,reportlab,pyjnius
 
 # Buildozer clona su propia copia de python-for-android desde GitHub
 # (ignora la versión instalada por pip). La rama por defecto (master/develop)
