@@ -1,23 +1,52 @@
 """
 Conversión Word -> PDF para la versión móvil (Android) de DocConvert NCTS.
 
-Motor: python-docx (lectura) + reportlab (escritura del PDF). Ambos se
-distribuyen como wheel universal (py3-none-any), es decir, son 100% Python
-puro y no necesitan compilarse para Android.
+Motor: python-docx (lectura) + fpdf2 (escritura del PDF). Ambos se
+distribuyen como wheel universal (py3-none-any) y NINGUNO tiene una "receta"
+de compilación en python-for-android que intente compilar extensiones en C
+-- eso es justo lo que rompía a `reportlab` (su receta en p4a descarga una
+versión antigua con un acelerador en C que no compila contra el NDK/Python
+modernos). fpdf2 evita ese problema por completo.
 
 Trade-off que debes conocer (igual que en el prototipo de escritorio):
 - No reproduce imágenes, encabezados/pies de página, columnas múltiples,
   ni estilos de tabla avanzados del documento original.
 - Tipografía y espaciados no son idénticos a los que generaría Word o
   LibreOffice (la versión de escritorio de DocConvert NCTS).
-- Sí conserva: títulos (Heading 1/2/3), negritas/cursivas/subrayado,
-  tablas simples, y listas con viñetas.
+- Sí conserva: títulos (Heading 1/2/3), negritas/cursivas, tablas simples,
+  y listas con viñetas.
 """
 
 import os
 from typing import Callable, Optional
 
 ProgressCallback = Optional[Callable[[str], None]]
+
+# Reemplazos comunes para caracteres que la fuente básica (Helvetica, solo
+# latin-1) no soporta. Cualquier otro carácter fuera de rango se sustituye
+# por "?" como último recurso, en vez de romper toda la conversión.
+_CHAR_REPLACEMENTS = {
+    "\u2192": "->",  # →
+    "\u2190": "<-",  # ←
+    "\u2013": "-",   # –
+    "\u2014": "--",  # —
+    "\u2018": "'",   # '
+    "\u2019": "'",   # '
+    "\u201c": '"',   # "
+    "\u201d": '"',   # "
+    "\u2022": "-",   # •
+    "\u2026": "...", # …
+}
+
+
+def _sanitize_text(text: str) -> str:
+    for original, replacement in _CHAR_REPLACEMENTS.items():
+        text = text.replace(original, replacement)
+    try:
+        text.encode("latin-1")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
 class ConversionError(Exception):
@@ -33,68 +62,12 @@ def convert_word_to_pdf(
         from docx import Document
         from docx.table import Table
         from docx.text.paragraph import Paragraph
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import letter
-        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-        from reportlab.lib.units import inch
-        from reportlab.platypus import (
-            SimpleDocTemplate,
-            Paragraph as RLParagraph,
-            Spacer,
-            Table as RLTable,
-            TableStyle,
-        )
+        from fpdf import FPDF
     except ImportError as exc:
         raise ConversionError(f"Faltan librerías necesarias: {exc}")
 
     if progress_cb:
         progress_cb("Leyendo documento Word...")
-
-    styles = getSampleStyleSheet()
-    heading_styles = {
-        "Heading 1": ParagraphStyle("H1", parent=styles["Heading1"], fontSize=18, spaceAfter=12),
-        "Heading 2": ParagraphStyle("H2", parent=styles["Heading2"], fontSize=14, spaceAfter=10),
-        "Heading 3": ParagraphStyle("H3", parent=styles["Heading3"], fontSize=12, spaceAfter=8),
-    }
-    body_style = ParagraphStyle("Body", parent=styles["Normal"], fontSize=10.5, spaceAfter=6, leading=14)
-    bullet_style = ParagraphStyle("Bullet", parent=body_style, leftIndent=18, bulletIndent=6, spaceAfter=4)
-
-    def runs_to_html(paragraph) -> str:
-        parts = []
-        for run in paragraph.runs:
-            text = run.text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            if not text:
-                continue
-            if run.bold:
-                text = f"<b>{text}</b>"
-            if run.italic:
-                text = f"<i>{text}</i>"
-            if run.underline:
-                text = f"<u>{text}</u>"
-            parts.append(text)
-        return "".join(parts) if parts else paragraph.text
-
-    def convert_table(table) -> "RLTable | None":
-        data = [[cell.text for cell in row.cells] for row in table.rows]
-        if not data:
-            return None
-        rl_table = RLTable(data, hAlign="LEFT")
-        rl_table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                ]
-            )
-        )
-        return rl_table
 
     try:
         doc = Document(input_path)
@@ -104,46 +77,104 @@ def convert_word_to_pdf(
     if progress_cb:
         progress_cb("Generando PDF...")
 
-    flow = []
+    pdf = FPDF(format="letter")
+    pdf.set_margins(22, 22, 22)
+    pdf.set_auto_page_break(True, margin=22)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=10.5)
+
+    HEADING_SIZES = {"Heading 1": 18, "Heading 2": 14, "Heading 3": 12}
+
+    def write_paragraph(paragraph) -> None:
+        text = _sanitize_text(paragraph.text.strip())
+        if not text:
+            pdf.ln(4)
+            return
+
+        style_name = paragraph.style.name if paragraph.style else "Normal"
+
+        if style_name in HEADING_SIZES:
+            pdf.set_font("Helvetica", style="B", size=HEADING_SIZES[style_name])
+            pdf.multi_cell(0, HEADING_SIZES[style_name] * 0.6 + 2, text)
+            pdf.set_font("Helvetica", size=10.5)
+            pdf.ln(2)
+            return
+
+        if style_name == "List Bullet":
+            pdf.set_x(pdf.l_margin + 6)
+            pdf.multi_cell(0, 6, f"-  {text}")
+            return
+
+        any_run = False
+        for run in paragraph.runs:
+            if not run.text:
+                continue
+            any_run = True
+            style = ""
+            if run.bold:
+                style += "B"
+            if run.italic:
+                style += "I"
+            pdf.set_font("Helvetica", style=style, size=10.5)
+            pdf.write(6, _sanitize_text(run.text))
+        if not any_run:
+            pdf.set_font("Helvetica", size=10.5)
+            pdf.write(6, text)
+        pdf.ln(8)
+        pdf.set_font("Helvetica", size=10.5)
+
+    def write_table(table) -> None:
+        rows = [[_sanitize_text(cell.text) for cell in row.cells] for row in table.rows]
+        if not rows:
+            return
+        col_count = max(len(r) for r in rows)
+        usable_width = pdf.w - pdf.l_margin - pdf.r_margin
+        col_width = usable_width / col_count
+
+        pdf.ln(2)
+        for r_index, row in enumerate(rows):
+            is_header = r_index == 0
+            pdf.set_font("Helvetica", style="B" if is_header else "", size=9)
+            if is_header:
+                pdf.set_fill_color(44, 62, 80)
+                pdf.set_text_color(255, 255, 255)
+            else:
+                if r_index % 2 == 0:
+                    pdf.set_fill_color(245, 245, 245)
+                else:
+                    pdf.set_fill_color(255, 255, 255)
+                pdf.set_text_color(0, 0, 0)
+
+            row_x = pdf.l_margin
+            row_y = pdf.get_y()
+            max_h = 8
+            for cell_text in row:
+                pdf.set_xy(row_x, row_y)
+                pdf.multi_cell(col_width, max_h, cell_text, border=1, fill=True)
+                row_x += col_width
+            pdf.set_y(row_y + max_h)
+
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", size=10.5)
+        pdf.ln(4)
+
     try:
+        wrote_anything = False
         for block in doc.element.body:
             if block.tag.endswith("}p"):
                 paragraph = Paragraph(block, doc)
-                text = paragraph.text.strip()
-                if not text:
-                    flow.append(Spacer(1, 6))
-                    continue
-
-                style_name = paragraph.style.name if paragraph.style else "Normal"
-                html = runs_to_html(paragraph)
-
-                if style_name in heading_styles:
-                    flow.append(RLParagraph(html, heading_styles[style_name]))
-                elif style_name == "List Bullet":
-                    flow.append(RLParagraph(f"&bull;&nbsp;&nbsp;{html}", bullet_style))
-                else:
-                    flow.append(RLParagraph(html, body_style))
-
+                write_paragraph(paragraph)
+                if paragraph.text.strip():
+                    wrote_anything = True
             elif block.tag.endswith("}tbl"):
                 table = Table(block, doc)
-                rl_table = convert_table(table)
-                if rl_table:
-                    flow.append(Spacer(1, 6))
-                    flow.append(rl_table)
-                    flow.append(Spacer(1, 10))
+                write_table(table)
+                wrote_anything = True
 
-        if not flow:
+        if not wrote_anything:
             raise ConversionError("El documento Word está vacío o no se pudo leer su contenido.")
 
-        pdf = SimpleDocTemplate(
-            output_path,
-            pagesize=letter,
-            topMargin=0.9 * inch,
-            bottomMargin=0.9 * inch,
-            leftMargin=0.9 * inch,
-            rightMargin=0.9 * inch,
-        )
-        pdf.build(flow)
+        pdf.output(output_path)
     except ConversionError:
         raise
     except Exception as exc:
