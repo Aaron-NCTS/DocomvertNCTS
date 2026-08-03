@@ -58,11 +58,20 @@ class LXMLRecipe(CompiledComponentsPythonRecipe):
         libxml2_recipe = Recipe.get_recipe('libxml2', self.ctx)
         libxml2_build_dir = libxml2_recipe.get_build_dir(arch.arch)
 
-        # lxml 5.x renombró la variable de entorno de "STATIC" a
-        # "STATICBUILD" (ver setupinfo.py de lxml); el resto de las
-        # variables (WITH_XML2_CONFIG, WITH_XSLT_CONFIG, LXML_STATIC_*)
-        # se mantienen igual entre versiones.
-        env["STATICBUILD"] = "true"
+        # IMPORTANTE: en lxml 5.x, la variable STATICBUILD activa un modo
+        # completamente distinto al que asumía la receta original: en vez
+        # de "usa estas rutas .a que ya tengo", significa "descarga y
+        # compila tu propia copia de libxml2/libxslt/libiconv desde cero"
+        # (ver ext_modules() en setupinfo.py de lxml, que llama a
+        # build_libxml2xslt() incondicionalmente si STATICBUILD está
+        # activo). Ese auto-build falla en cross-compilación porque su
+        # script de configure de libiconv intenta ejecutar binarios ARM
+        # directamente en el host x86 ("cannot run C compiled programs").
+        #
+        # No la activamos: en su lugar, dejamos que lxml detecte las
+        # librerías vía WITH_XML2_CONFIG/WITH_XSLT_CONFIG (que sí apuntan
+        # a lo que python-for-android ya compiló), y los include/library
+        # dirs de abajo se usan para el link final de la extensión.
 
         env["LXML_STATIC_INCLUDE_DIRS"] = "{}:{}".format(
             join(libxml2_build_dir, "include"), join(libxslt_build_dir)
