@@ -9,8 +9,11 @@ source.include_exts = py,png,jpg,kv,atlas
 version = 1.0.0
 
 # pypdf: extracción de texto de PDF (sin dependencias nativas).
-# python-docx: generación del archivo Word de salida.
-requirements = python3,kivy,plyer,pypdf,python-docx,fpdf2,pyjnius
+# python-docx: generación del archivo Word de salida (requiere lxml, que sí
+#   tiene una receta de compilación en python-for-android, pero hay que
+#   listarla explícitamente: p4a no resuelve dependencias transitivas de
+#   paquetes pip genéricos como python-docx).
+requirements = python3,kivy,plyer,pypdf,python-docx,lxml,fpdf2,pyjnius
 
 # Buildozer clona su propia copia de python-for-android desde GitHub
 # (ignora la versión instalada por pip). La rama por defecto (master/develop)
