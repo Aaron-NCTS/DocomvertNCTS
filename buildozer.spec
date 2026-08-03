@@ -22,6 +22,12 @@ requirements = python3,kivy,plyer,pypdf,python-docx,lxml,fpdf2,pyjnius
 # estable que usa Python 3.11.5.
 p4a.branch = v2024.01.21
 
+# Receta local de lxml (ver recipes/lxml/__init__.py): la oficial de p4a
+# está fijada a lxml 4.8.0, cuyo código C generado no compila contra
+# Python 3.11+ ("incomplete definition of type 'struct _frame'"). Esta
+# carpeta local tiene prioridad y usa lxml 5.2.2 en su lugar.
+p4a.local_recipes = ./recipes
+
 orientation = portrait
 fullscreen = 0
 
