@@ -9,11 +9,22 @@ source.include_exts = py,png,jpg,kv,atlas
 version = 1.0.0
 
 # pypdf: extracción de texto de PDF (sin dependencias nativas).
-# python-docx: generación del archivo Word de salida (requiere lxml, que sí
-#   tiene una receta de compilación en python-for-android, pero hay que
-#   listarla explícitamente: p4a no resuelve dependencias transitivas de
-#   paquetes pip genéricos como python-docx).
-requirements = python3,kivy,plyer,pypdf,python-docx,lxml,fpdf2,pyjnius
+# fpdf2: generación de PDF (Word -> PDF, Fotos -> PDF), sin dependencias nativas.
+# Pillow: procesamiento de fotos (rotar, ajustar a página) para el modo
+#   Fotos -> PDF. fpdf2 ya la trae como dependencia transitiva, pero la
+#   listamos explícitamente porque python-for-android no resuelve
+#   dependencias transitivas de paquetes pip genéricos de forma confiable
+#   (aprendido de la saga de lxml/python-docx). Pillow SÍ tiene una receta
+#   madura y ampliamente probada en python-for-android (a diferencia de
+#   lxml), así que no debería dar problemas.
+# El .docx (lectura y escritura) se maneja con nuestro propio módulo
+# docx_lite.py (zipfile + xml.etree, librería estándar) en vez de
+# python-docx, porque python-docx depende de lxml y esa librería resultó
+# imposible de compilar de forma confiable para Android en este entorno
+# (varios intentos: receta oficial de p4a incompatible con Python 3.11+,
+# y versiones más nuevas de lxml requieren auto-compilar libiconv de una
+# forma que no funciona en cross-compilación). Ver docx_lite.py.
+requirements = python3,kivy,plyer,pypdf,fpdf2,pillow,pyjnius
 
 # Buildozer clona su propia copia de python-for-android desde GitHub
 # (ignora la versión instalada por pip). La rama por defecto (master/develop)
@@ -22,18 +33,12 @@ requirements = python3,kivy,plyer,pypdf,python-docx,lxml,fpdf2,pyjnius
 # estable que usa Python 3.11.5.
 p4a.branch = v2024.01.21
 
-# Receta local de lxml (ver recipes/lxml/__init__.py): la oficial de p4a
-# está fijada a lxml 4.8.0, cuyo código C generado no compila contra
-# Python 3.11+ ("incomplete definition of type 'struct _frame'"). Esta
-# carpeta local tiene prioridad y usa lxml 5.2.2 en su lugar.
-p4a.local_recipes = ./recipes
-
 orientation = portrait
 fullscreen = 0
 
 icon.filename = %(source.dir)s/assets/icon.png
 
-android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE
+android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,CAMERA,READ_MEDIA_IMAGES
 
 # API 32 evita el "scoped storage" estricto de API 33+, simplificando
 # el guardado directo en Download/DocConvert NCTS. Se puede migrar a

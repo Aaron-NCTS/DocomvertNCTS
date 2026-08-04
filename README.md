@@ -142,11 +142,41 @@ O simplemente copia el `.apk` al celular y ábrelo (Android pedirá permitir
 
 ```
 DocConvertMobile/
-├── main.py            # App Kivy (interfaz + flujo de conversión)
-├── converter.py        # Lógica de conversión PDF->Word (pdf2docx)
-├── android_utils.py    # Permisos y rutas de almacenamiento específicas de Android
-├── buildozer.spec       # Configuración de compilación Android
-├── requirements.txt     # Dependencias para probar en escritorio
+├── main.py             # App Kivy: interfaz, selector PDF<->Word, lista de archivos,
+│                        # progreso, cancelar, abrir/compartir, historial
+├── converter.py         # Motor PDF -> Word (pypdf, sin dependencias nativas)
+├── word_converter.py     # Motor Word -> PDF (fpdf2, sin dependencias nativas)
+├── android_utils.py       # Permisos, content:// URIs, tamaño de archivo,
+│                          # abrir/compartir, límite de tamaño, limpieza de temporales
+├── history.py              # Historial local de conversiones (JSON, no se sube a ningún lado)
+├── buildozer.spec           # Configuración de compilación Android
+├── requirements.txt         # Dependencias para probar en escritorio
 └── assets/
-    └── icon.png          # Ícono de la app
+    └── icon.png              # Ícono de la app
 ```
+
+## 5. Notas de la versión con rediseño completo
+
+- **Selector de modo siempre visible** (PDF→Word / Word→PDF) en vez de un menú
+  oculto — el botón de menú anterior (⋮) usaba un carácter Unicode que
+  algunas fuentes de Android no tienen, mostrando un cuadro/tofu en su lugar.
+  Se eliminó ese botón por completo; ahora todos los botones usan solo texto
+  plano, que sí está garantizado en cualquier dispositivo.
+- **Cancelar conversión**: detiene los archivos pendientes (el archivo que ya
+  está a media conversión sí termina, por diseño — no se puede interrumpir
+  a la mitad sin arriesgar corromper el archivo de salida).
+- **Límite de tamaño** (25 MB por archivo, configurable en `android_utils.py`
+  vía `MAX_FILE_SIZE_MB`) para evitar quedarse sin memoria con archivos muy
+  grandes en celulares con poca RAM.
+- **Limpieza de temporales**: los archivos copiados desde un `content://` URI
+  se borran después de cada conversión (nunca se toca el archivo original
+  del usuario).
+- **Abrir y Compartir**: usan `FileProvider` de Android para generar un
+  `content://` URI válido. Si el `FileProvider` no está configurado
+  correctamente en el manifest generado por Buildozer, cae automáticamente a
+  mostrar la ruta exacta del archivo (que siempre es válida, ya que el
+  archivo sí se guardó).
+- **Historial local** ("Conversiones recientes"): se guarda en un archivo
+  JSON dentro del almacenamiento privado de la app. Nunca se sube a ningún
+  lado.
+

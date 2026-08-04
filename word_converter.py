@@ -1,12 +1,13 @@
 """
 Conversión Word -> PDF para la versión móvil (Android) de DocConvert NCTS.
 
-Motor: python-docx (lectura) + fpdf2 (escritura del PDF). Ambos se
-distribuyen como wheel universal (py3-none-any) y NINGUNO tiene una "receta"
-de compilación en python-for-android que intente compilar extensiones en C
--- eso es justo lo que rompía a `reportlab` (su receta en p4a descarga una
-versión antigua con un acelerador en C que no compila contra el NDK/Python
-modernos). fpdf2 evita ese problema por completo.
+Motor: docx_lite (lectura, con la librería estándar) + fpdf2 (escritura del
+PDF, wheel universal py3-none-any). Se usa docx_lite en vez de python-docx
+porque python-docx depende de lxml, que resultó imposible de compilar de
+forma confiable para Android en este entorno (ver docx_lite.py para el
+detalle completo). fpdf2 se eligió sobre reportlab porque la receta de
+reportlab en python-for-android trae una versión vieja con un acelerador
+en C que no compila contra el NDK/Python modernos.
 
 Trade-off que debes conocer (igual que en el prototipo de escritorio):
 - No reproduce imágenes, encabezados/pies de página, columnas múltiples,
@@ -19,6 +20,8 @@ Trade-off que debes conocer (igual que en el prototipo de escritorio):
 
 import os
 from typing import Callable, Optional
+
+import docx_lite
 
 ProgressCallback = Optional[Callable[[str], None]]
 
@@ -59,18 +62,15 @@ def convert_word_to_pdf(
     progress_cb: ProgressCallback = None,
 ) -> None:
     try:
-        from docx import Document
-        from docx.table import Table
-        from docx.text.paragraph import Paragraph
         from fpdf import FPDF
     except ImportError as exc:
-        raise ConversionError(f"Faltan librerías necesarias: {exc}")
+        raise ConversionError(f"Falta la librería fpdf2: {exc}")
 
     if progress_cb:
         progress_cb("Leyendo documento Word...")
 
     try:
-        doc = Document(input_path)
+        items = docx_lite.read_docx(input_path)
     except Exception as exc:
         raise ConversionError(f"No se pudo abrir el documento Word: {exc}")
 
@@ -91,7 +91,7 @@ def convert_word_to_pdf(
             pdf.ln(4)
             return
 
-        style_name = paragraph.style.name if paragraph.style else "Normal"
+        style_name = paragraph.style or "Normal"
 
         if style_name in HEADING_SIZES:
             pdf.set_font("Helvetica", style="B", size=HEADING_SIZES[style_name])
@@ -124,7 +124,7 @@ def convert_word_to_pdf(
         pdf.set_font("Helvetica", size=10.5)
 
     def write_table(table) -> None:
-        rows = [[_sanitize_text(cell.text) for cell in row.cells] for row in table.rows]
+        rows = [[_sanitize_text(cell) for cell in row] for row in table.rows]
         if not rows:
             return
         col_count = max(len(r) for r in rows)
@@ -160,15 +160,13 @@ def convert_word_to_pdf(
 
     try:
         wrote_anything = False
-        for block in doc.element.body:
-            if block.tag.endswith("}p"):
-                paragraph = Paragraph(block, doc)
-                write_paragraph(paragraph)
-                if paragraph.text.strip():
+        for item in items:
+            if isinstance(item, docx_lite.Paragraph):
+                write_paragraph(item)
+                if item.text.strip():
                     wrote_anything = True
-            elif block.tag.endswith("}tbl"):
-                table = Table(block, doc)
-                write_table(table)
+            elif isinstance(item, docx_lite.Table):
+                write_table(item)
                 wrote_anything = True
 
         if not wrote_anything:

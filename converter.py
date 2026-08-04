@@ -1,11 +1,13 @@
 """
 Conversión PDF -> Word para la versión móvil (Android) de DocConvert NCTS.
 
-Motor: pypdf + python-docx. Se eligió pypdf en vez de pdfminer.six porque
-pdfminer.six depende de `cryptography` (extensión nativa en Rust/C sin build
-para Android), y en vez de pdf2docx/PyMuPDF (motor de escritorio) porque
-tampoco compila para Android. pypdf no tiene NINGUNA dependencia nativa
-obligatoria, por eso es la única opción que realmente compila en este entorno.
+Motor: pypdf + docx_lite (nuestro propio escritor de .docx con la librería
+estándar). Se eligió pypdf en vez de pdfminer.six porque pdfminer.six
+depende de `cryptography` (extensión nativa en Rust/C sin build para
+Android), y en vez de pdf2docx/PyMuPDF (motor de escritorio) porque tampoco
+compila para Android. Se usa `docx_lite` en vez de `python-docx` porque
+python-docx depende de `lxml`, que resultó imposible de compilar de forma
+confiable para Android en este entorno (ver docx_lite.py para el detalle).
 
 Trade-off que debes conocer: pypdf entrega el texto línea por línea, sin
 información de bloques/párrafos como sí daba pdf2docx o pdfminer. Para
@@ -20,6 +22,8 @@ para texto corrido (cartas, reportes, contratos), pero:
 import os
 import re
 from typing import Callable, Optional
+
+import docx_lite
 
 ProgressCallback = Optional[Callable[[str], None]]
 
@@ -102,34 +106,27 @@ def convert_pdf_to_word(
             "usa la versión de escritorio para este archivo."
         )
 
-    try:
-        from docx import Document
-    except ImportError as exc:
-        raise ConversionError(f"La librería python-docx no está disponible: {exc}")
-
     if progress_cb:
         progress_cb("Extrayendo texto del PDF...")
 
-    doc = Document()
-    wrote_anything = False
+    paragraphs = []
 
     try:
         for item in _iter_paragraphs(input_path):
             if item is None:
                 continue
-            doc.add_paragraph(item)
-            wrote_anything = True
+            paragraphs.append(item)
     except Exception as exc:
         raise ConversionError(f"Error al leer el PDF: {exc}")
 
-    if not wrote_anything:
+    if not paragraphs:
         raise ConversionError("No se pudo extraer texto del PDF (puede estar dañado o vacío).")
 
     if progress_cb:
         progress_cb("Guardando documento Word...")
 
     try:
-        doc.save(output_path)
+        docx_lite.write_docx(paragraphs, output_path)
     except Exception as exc:
         raise ConversionError(f"Error al guardar el documento Word: {exc}")
 

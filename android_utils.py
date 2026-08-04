@@ -25,6 +25,13 @@ if ON_ANDROID:
         Permission.READ_EXTERNAL_STORAGE,
         Permission.WRITE_EXTERNAL_STORAGE,
     ]
+    # READ_MEDIA_IMAGES es un permiso más nuevo (Android 13+); no todas las
+    # versiones de python-for-android/plyer lo tienen definido en su enum
+    # Permission, así que lo agregamos con manejo seguro.
+    try:
+        REQUIRED_PERMISSIONS.append(Permission.READ_MEDIA_IMAGES)
+    except AttributeError:
+        pass
 
 
 def ensure_permissions(callback=None) -> None:
@@ -45,6 +52,35 @@ def ensure_permissions(callback=None) -> None:
             callback(all(grants))
 
     request_permissions(REQUIRED_PERMISSIONS, _on_result)
+
+
+def ensure_camera_permission(callback=None) -> None:
+    """Solicita el permiso de cámara solo cuando el usuario intenta usarla."""
+    if not ON_ANDROID:
+        if callback:
+            callback(True)
+        return
+
+    try:
+        camera_perm = Permission.CAMERA
+    except AttributeError:
+        # Este runtime no define el permiso de cámara; no podemos pedirlo,
+        # pero tampoco bloqueamos -- el intent de cámara del sistema puede
+        # funcionar igual dependiendo del fabricante.
+        if callback:
+            callback(True)
+        return
+
+    if check_permission(camera_perm):
+        if callback:
+            callback(True)
+        return
+
+    def _on_result(permissions, grants):
+        if callback:
+            callback(all(grants))
+
+    request_permissions([camera_perm], _on_result)
 
 
 def get_display_name(uri_str: str) -> str:
@@ -78,6 +114,105 @@ def get_display_name(uri_str: str) -> str:
         return "documento.pdf"
 
     return os.path.basename(uri_str) or "documento.pdf"
+
+
+_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
+
+
+def sanitize_filename(name: str, fallback: str = "documento") -> str:
+    """Quita caracteres no permitidos en nombres de archivo en Android/Windows."""
+    name = (name or "").strip()
+    cleaned = "".join(c for c in name if c not in _INVALID_FILENAME_CHARS).strip()
+    cleaned = cleaned.rstrip(".")  # Windows no permite terminar en punto
+    return cleaned or fallback
+
+
+def resolve_unique_path(directory: str, filename: str) -> str:
+    """
+    Si ya existe un archivo con ese nombre en `directory`, agrega ' (1)',
+    ' (2)', etc. hasta encontrar un nombre libre. Regresa la ruta completa.
+    """
+    base, ext = os.path.splitext(filename)
+    candidate = filename
+    counter = 1
+    while os.path.exists(os.path.join(directory, candidate)):
+        candidate = f"{base} ({counter}){ext}"
+        counter += 1
+    return os.path.join(directory, candidate)
+
+
+def rename_file(old_path: str, new_name: str) -> str:
+    """
+    Renombra un archivo ya guardado, evitando colisiones con otro archivo
+    existente. Regresa la nueva ruta completa. Lanza IOError si algo falla.
+    """
+    if not os.path.isfile(old_path):
+        raise IOError("El archivo ya no existe; no se puede renombrar.")
+
+    directory = os.path.dirname(old_path)
+    _, old_ext = os.path.splitext(old_path)
+    new_name = sanitize_filename(new_name)
+
+    # Conservar la extensión original: el usuario renombra el "título",
+    # no debería poder cambiar accidentalmente .pdf a otra cosa.
+    new_base, new_ext = os.path.splitext(new_name)
+    if not new_ext:
+        new_name = new_base + old_ext
+
+    new_path = resolve_unique_path(directory, new_name)
+    if new_path == old_path:
+        return old_path
+
+    try:
+        os.rename(old_path, new_path)
+    except Exception as exc:
+        raise IOError(f"No se pudo renombrar el archivo: {exc}")
+
+    notify_media_scanner(new_path)
+    return new_path
+
+
+def delete_file(path: str) -> bool:
+    """Elimina un archivo generado por la app. Regresa True si se borró (o ya no existía)."""
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+        return True
+    except Exception:
+        return False
+
+
+def take_photo(callback) -> bool:
+    """
+    Abre la cámara del sistema para tomar una foto. `callback(path_or_none)`
+    se llama con la ruta del archivo guardado, o None si el usuario canceló
+    o algo falló. Regresa False de inmediato si plyer.camera no está
+    disponible en este entorno (ej. algunos emuladores/escritorio).
+    """
+    try:
+        from plyer import camera
+    except Exception:
+        return False
+
+    import tempfile
+
+    dest_dir = temp_cache_dir()
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.join(dest_dir, f"foto_{uuid.uuid4().hex}.jpg")
+
+    def _on_complete(*args):
+        if os.path.isfile(dest_path):
+            callback(dest_path)
+        else:
+            callback(None)
+
+    try:
+        camera.take_picture(filename=dest_path, on_complete=_on_complete)
+        return True
+    except NotImplementedError:
+        return False
+    except Exception:
+        return False
 
 
 def resolve_to_local_path(path_or_uri: str, cache_dir: str) -> str:
