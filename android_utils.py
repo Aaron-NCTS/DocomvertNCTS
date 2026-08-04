@@ -182,39 +182,6 @@ def delete_file(path: str) -> bool:
         return False
 
 
-def take_photo(callback) -> bool:
-    """
-    Abre la cámara del sistema para tomar una foto. `callback(path_or_none)`
-    se llama con la ruta del archivo guardado, o None si el usuario canceló
-    o algo falló. Regresa False de inmediato si plyer.camera no está
-    disponible en este entorno (ej. algunos emuladores/escritorio).
-    """
-    try:
-        from plyer import camera
-    except Exception:
-        return False
-
-    import tempfile
-
-    dest_dir = temp_cache_dir()
-    os.makedirs(dest_dir, exist_ok=True)
-    dest_path = os.path.join(dest_dir, f"foto_{uuid.uuid4().hex}.jpg")
-
-    def _on_complete(*args):
-        if os.path.isfile(dest_path):
-            callback(dest_path)
-        else:
-            callback(None)
-
-    try:
-        camera.take_picture(filename=dest_path, on_complete=_on_complete)
-        return True
-    except NotImplementedError:
-        return False
-    except Exception:
-        return False
-
-
 def resolve_to_local_path(path_or_uri: str, cache_dir: str) -> str:
     """
     En Android, el selector de archivos (plyer) puede devolver un URI tipo
@@ -406,8 +373,36 @@ def cleanup_temp_file(file_path: str, cache_dir: str) -> None:
         pass
 
 
-MAX_FILE_SIZE_MB = 25
+# Antes este límite era de 25 MB. Se sube a 1 GB porque no hay razón técnica
+# real para rechazar archivos más grandes -- ya copiamos y procesamos todo
+# por streaming (bloques de 64 KB, nunca cargamos el archivo completo a
+# memoria), así que el límite real pasa a ser "hay espacio en disco",
+# no un número arbitrario.
+MAX_FILE_SIZE_MB = 1024
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+
+def get_free_disk_space(path: str) -> int:
+    """Devuelve el espacio libre en bytes en la partición donde vive `path`."""
+    try:
+        stat = shutil.disk_usage(path if os.path.isdir(path) else os.path.dirname(path) or ".")
+        return stat.free
+    except Exception:
+        return -1  # desconocido; quien llama debe decidir cómo tratarlo
+
+
+def has_enough_space(directory: str, needed_bytes: int, safety_margin: float = 1.5) -> bool:
+    """
+    Comprueba que haya espacio suficiente para escribir un archivo de
+    `needed_bytes`, con un margen de seguridad (por defecto 50% extra, para
+    cubrir el archivo temporal ".part" y el resultado final coexistiendo).
+    Si no se pudo determinar el espacio libre, se asume que sí hay
+    (más vale intentar que bloquear sin motivo).
+    """
+    free = get_free_disk_space(directory)
+    if free < 0:
+        return True
+    return free >= int(needed_bytes * safety_margin)
 
 
 def temp_cache_dir() -> str:

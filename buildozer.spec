@@ -33,6 +33,15 @@ requirements = python3,kivy,plyer,pypdf,fpdf2,pillow,pyjnius
 # estable que usa Python 3.11.5.
 p4a.branch = v2024.01.21
 
+# Hook que agrega un FileProvider al AndroidManifest.xml generado (ver
+# hooks/fileprovider_hook.py). Necesario para que "Abrir"/"Compartir" y la
+# cámara funcionen de forma confiable en Android 7+ (requieren un
+# content:// URI válido, no una ruta file:// expuesta). Aviso honesto: si
+# la ruta interna del manifest cambia entre versiones de p4a, este hook no
+# rompe la compilación -- simplemente no agrega el FileProvider, y el
+# código ya tiene manejo de respaldo para ese caso.
+p4a.hook = ./hooks/fileprovider_hook.py
+
 orientation = portrait
 fullscreen = 0
 

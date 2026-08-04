@@ -142,20 +142,65 @@ O simplemente copia el `.apk` al celular y ábrelo (Android pedirá permitir
 
 ```
 DocConvertMobile/
-├── main.py             # App Kivy: interfaz, selector PDF<->Word, lista de archivos,
-│                        # progreso, cancelar, abrir/compartir, historial
-├── converter.py         # Motor PDF -> Word (pypdf, sin dependencias nativas)
-├── word_converter.py     # Motor Word -> PDF (fpdf2, sin dependencias nativas)
-├── android_utils.py       # Permisos, content:// URIs, tamaño de archivo,
-│                          # abrir/compartir, límite de tamaño, limpieza de temporales
-├── history.py              # Historial local de conversiones (JSON, no se sube a ningún lado)
-├── buildozer.spec           # Configuración de compilación Android
-├── requirements.txt         # Dependencias para probar en escritorio
+├── main.py                 # App Kivy: ScreenManager (Inicio + 3 herramientas),
+│                            # menú de tres líneas, "Mis archivos creados"
+├── android_filechooser.py   # Selector nativo de Android (SAF) vía pyjnius directo,
+│                            # reemplaza a plyer.filechooser (ver sección 6)
+├── converter.py              # Motor PDF -> Word (pypdf, sin dependencias nativas)
+├── word_converter.py          # Motor Word -> PDF (fpdf2, sin dependencias nativas)
+├── image_converter.py          # Motor Fotos -> PDF (Pillow, sin dependencias nativas)
+├── docx_lite.py                 # Lectura/escritura .docx con librería estándar (sin lxml)
+├── android_utils.py              # Permisos, content:// URIs, tamaño/espacio en disco,
+│                                 # abrir/compartir, renombrar/eliminar, limpieza de temporales
+├── history.py                     # "Mis archivos creados": historial local persistente (JSON)
+├── hooks/
+│   └── fileprovider_hook.py        # Hook de compilación: agrega FileProvider al manifest
+├── buildozer.spec                   # Configuración de compilación Android
+├── requirements.txt                 # Dependencias para probar en escritorio
 └── assets/
-    └── icon.png              # Ícono de la app
+    └── icon.png                      # Ícono de la app
 ```
 
 ## 5. Notas de la versión con rediseño completo
+
+### Corrección del selector de archivos (bug real, confirmado con video)
+
+`plyer.filechooser` en Android solo acepta como filtro una palabra clave
+string de una lista fija ("pdf", "docx", "image"...). Este proyecto le
+pasaba tuplas (`("Documentos PDF", "*.pdf")`), que `plyer` no reconocía,
+cayendo silenciosamente a `setType("*/*")` -- por eso el selector abría en
+"Recientes" mostrando fotos/videos en vez de documentos. `android_filechooser.py`
+reemplaza esto con `Intent.ACTION_OPEN_DOCUMENT` + `EXTRA_MIME_TYPES`
+construido a mano, `getClipData()`/`getData()`, permisos persistentes, y
+`android.activity.bind()` para el resultado -- todo hecho a mano con
+`pyjnius`, sin depender de la capa de abstracción de `plyer` para esto. En
+escritorio (para pruebas con `python main.py`) se sigue usando
+`plyer.filechooser`, ya que ese bug es específico del backend Android.
+
+### Límite de tamaño
+
+Subido de 25 MB a 1 GB. Se verifica espacio libre en disco
+(`android_utils.has_enough_space`) antes de escribir, y todo el copiado/
+procesamiento se hace por streaming (bloques de 64 KB), nunca cargando el
+archivo completo a memoria.
+
+### FileProvider vía hook de compilación
+
+`buildozer.spec` no tiene una opción directa para agregar un `<provider>`
+dentro de `<application>` en el manifest. `hooks/fileprovider_hook.py` lo
+inyecta editando el `AndroidManifest.xml` generado, justo antes de que
+Gradle empaquete el APK. Si la ruta interna cambia entre versiones de
+python-for-android, el hook simplemente no aplica el cambio (no rompe la
+compilación) -- en ese caso, "Abrir"/"Compartir" caen a su respaldo ya
+existente (mostrar el nombre del archivo en vez de abrirlo automáticamente).
+
+### Navegación
+
+Se reemplazaron los 3 botones horizontales por un `ScreenManager` con 4
+pantallas (Inicio + PDF a Word + Word a PDF + Fotos a PDF), accesibles
+desde un menú desplegable en un botón de "tres líneas" dibujado con el
+canvas de Kivy (no un carácter Unicode, para evitar el problema de
+"cuadro vacío" en fuentes que no tienen ese glifo).
 
 - **Selector de modo siempre visible** (PDF→Word / Word→PDF) en vez de un menú
   oculto — el botón de menú anterior (⋮) usaba un carácter Unicode que
