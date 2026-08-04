@@ -33,21 +33,31 @@ requirements = python3,kivy,plyer,pypdf,fpdf2,pillow,pyjnius
 # estable que usa Python 3.11.5.
 p4a.branch = v2024.01.21
 
-# Hook que agrega un FileProvider al AndroidManifest.xml generado (ver
-# hooks/fileprovider_hook.py). Necesario para que "Abrir"/"Compartir" y la
-# cámara funcionen de forma confiable en Android 7+ (requieren un
-# content:// URI válido, no una ruta file:// expuesta). Aviso honesto: si
-# la ruta interna del manifest cambia entre versiones de p4a, este hook no
-# rompe la compilación -- simplemente no agrega el FileProvider, y el
-# código ya tiene manejo de respaldo para ese caso.
-p4a.hook = ./hooks/fileprovider_hook.py
-
-# Recurso que necesita el FileProvider (ver hooks/fileprovider_hook.py).
-# Se incluye desde el INICIO de la compilación (no en una etapa tardía),
-# porque los <provider> de Android se inicializan de inmediato al arrancar
-# el proceso -- si el recurso no está listo a tiempo, la app se cierra al
-# abrir, no solo al usar Abrir/Compartir.
-android.add_resources = android_res/xml/file_paths.xml:xml/file_paths.xml
+# --- FileProvider: ELIMINADO (causaba el cierre al abrir) ---
+# Se intentó tres veces declarar un <provider android:name="androidx.core.
+# content.FileProvider"> en el manifest para que Abrir/Compartir usaran un
+# content:// URI real. CONFIRMADO inspeccionando directamente los .dex del
+# APK compilado: esa clase (androidx.core.content.FileProvider) NUNCA
+# estuvo incluida en el APK -- solo se declaraba en el manifest, sin la
+# librería AndroidX Core real como dependencia de Gradle. Android
+# instancia TODOS los <provider> declarados en el manifest de inmediato
+# al arrancar el proceso (antes de que corra una sola línea de Python), así
+# que al no encontrar la clase, lanzaba ClassNotFoundException / FATAL
+# EXCEPTION de inmediato -- la app se cerraba antes de mostrar nada.
+#
+# Se puede arreglar de raíz agregando la librería real vía:
+#   android.enable_androidx = True
+#   android.gradle_dependencies = androidx.core:core:1.10.1
+# pero eso no se pudo probar en un dispositivo real en este entorno, y ya
+# van tres intentos fallidos con este mismo subsistema. Se prioriza la
+# estabilidad: Abrir/Compartir siguen funcionando (ver android_utils.py),
+# solo que sin FileProvider caen directamente a Uri.fromFile() -- que en
+# Android 7+ puede fallar con FileUriExposedException, en cuyo caso el
+# respaldo ya existente muestra la ruta del archivo en vez de abrirlo
+# automáticamente. Es una funcionalidad reducida, no un cierre de la app.
+#
+# p4a.hook = ./hooks/fileprovider_hook.py
+# android.add_resources = android_res/xml/file_paths.xml:xml/file_paths.xml
 
 orientation = portrait
 fullscreen = 0

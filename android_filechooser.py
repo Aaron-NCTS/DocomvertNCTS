@@ -33,8 +33,24 @@ import uuid
 from typing import Callable, List, Optional
 
 try:
-    from android import activity, mActivity
+    from android import activity
     from jnius import autoclass, cast
+
+    # IMPORTANTE (bug real encontrado y corregido): `mActivity` NO es un
+    # nombre exportado por el paquete `android` de python-for-android --
+    # revisando su código fuente (android/__init__.py solo hace
+    # `from android._android import *`, y android/activity.py obtiene la
+    # actividad vía `autoclass(ACTIVITY_CLASS_NAME).mActivity`, no como
+    # import directo). La versión anterior de este archivo hacía
+    # `from android import activity, mActivity`, lo cual lanzaba
+    # ImportError en CADA arranque en Android real -- el error quedaba
+    # atrapado por este mismo try/except, así que no crasheaba la app,
+    # pero significaba que `ON_ANDROID` quedaba en False SIEMPRE en
+    # Android real, y el selector nativo nunca funcionaba (silenciosamente).
+    # La forma correcta (la misma que ya usa el resto del proyecto en
+    # android_utils.py) es pedirla vía pyjnius:
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    mActivity = PythonActivity.mActivity
 
     ON_ANDROID = True
 except Exception:
@@ -239,6 +255,10 @@ def open_camera_capture(on_photo_taken: Callable[[Optional[str]], None], dest_di
         mActivity.startActivityForResult(intent, request_code)
         return True
     except Exception as exc:
+        # Nota: mientras no se agregue androidx.core como dependencia real
+        # de Gradle (ver buildozer.spec), esto va a fallar siempre porque
+        # la clase FileProvider no existe en el APK -- por eso devolvemos
+        # False (no True), para que main.py muestre un mensaje claro en
+        # vez de quedarse en silencio sin explicar por qué no pasó nada.
         _log(f"No se pudo abrir la cámara: {exc}")
-        on_photo_taken(None)
-        return True
+        return False
