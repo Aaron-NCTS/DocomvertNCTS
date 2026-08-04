@@ -941,16 +941,41 @@ class PhotosToolScreen(BaseToolScreen):
     def _on_files_selected(self, selection):
         if not selection:
             return
+        added = 0
+        rejected_messages = []
         for path in selection:
             if path in self.files:
-                continue
+                continue  # evita duplicados si el usuario vuelve a elegir la misma foto
             size = get_file_size(path)
             if self._reject_if_too_large(path, size):
                 continue
+
+            try:
+                local_path = resolve_to_local_path(path, temp_cache_dir())
+            except Exception as exc:
+                rejected_messages.append(
+                    f"{get_display_name(path)}: no se pudo acceder a la imagen ({exc})."
+                )
+                continue
+
+            try:
+                from image_converter import validate_image_file
+
+                validate_image_file(local_path)
+            except Exception as exc:
+                rejected_messages.append(f"{get_display_name(path)}: {exc}")
+                cleanup_temp_file(local_path, temp_cache_dir())
+                continue
+
             self.files.append(path)
-            local_path = resolve_to_local_path(path, temp_cache_dir())
             self.display_names[path] = get_display_name(path) or Path(local_path).name
             self._add_photo_row(path, local_path)
+            added += 1
+
+        if rejected_messages:
+            self.status_text = " | ".join(rejected_messages)
+        elif added:
+            self.status_text = f"{added} foto(s) agregada(s)."
 
     def _add_photo_row(self, path, local_path):
         from kivy.factory import Factory
@@ -1200,14 +1225,24 @@ class DocConvertApp(App):
                 except ConversionError as exc:
                     self._update_card_status(screen, path, "Error", (0.9, 0.35, 0.38, 1))
                     self._show_error_popup(display_name, str(exc))
-                    self._add_history(display_name, mode_label, "Error")
                     errored += 1
-                except Exception:
+                except Exception as exc:
+                    # Registro de depuración (consola/logcat, nunca al usuario
+                    # como traceback completo): permite diagnosticar fallos
+                    # reales sin adivinar. El usuario ve un mensaje corto con
+                    # el tipo de error, no el traceback completo.
+                    import traceback
+
+                    print(f"[DocConvertNCTS] Error convirtiendo '{display_name}' "
+                          f"(modo={mode}, path={path}):")
+                    traceback.print_exc()
+
                     self._update_card_status(screen, path, "Error", (0.9, 0.35, 0.38, 1))
                     self._show_error_popup(
-                        display_name, "No se pudo abrir o convertir el archivo seleccionado."
+                        display_name,
+                        f"No se pudo procesar el archivo ({type(exc).__name__}: {exc}). "
+                        f"Vuelve a seleccionarlo desde Descargas o Documentos.",
                     )
-                    self._add_history(display_name, mode_label, "Error")
                     errored += 1
                 finally:
                     if local_path and local_path != path:
@@ -1218,6 +1253,10 @@ class DocConvertApp(App):
                         except Exception:
                             pass
         except Exception as exc:
+            import traceback
+
+            print(f"[DocConvertNCTS] Error inesperado en _document_worker:")
+            traceback.print_exc()
             self._set_screen_status(screen, f"Error inesperado durante la conversión: {exc}")
         finally:
             self._finish_document(screen, completed, errored)
@@ -1276,13 +1315,18 @@ class DocConvertApp(App):
             self._finish_photos(screen, success=True)
         except ConversionError as exc:
             self._show_error_popup("Fotos a PDF", str(exc))
-            self._add_history("Fotos a PDF", "Fotos -> PDF", "Error")
             self._finish_photos(screen, success=False)
-        except Exception:
+        except Exception as exc:
+            import traceback
+
+            print("[DocConvertNCTS] Error inesperado en _photos_worker:")
+            traceback.print_exc()
+
             self._show_error_popup(
-                "Fotos a PDF", "No se pudo crear el PDF con las fotografías seleccionadas."
+                "Fotos a PDF",
+                f"No se pudo crear el PDF ({type(exc).__name__}: {exc}). "
+                f"Intenta quitar la última foto agregada y vuelve a intentar.",
             )
-            self._add_history("Fotos a PDF", "Fotos -> PDF", "Error")
             self._finish_photos(screen, success=False)
 
     @mainthread

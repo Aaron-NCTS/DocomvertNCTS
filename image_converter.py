@@ -43,6 +43,80 @@ MAX_DIMENSION_PX = {
 MM_TO_PT = 72.0 / 25.4
 
 
+def detect_real_image_format(path: str) -> str:
+    """
+    Detecta el formato real de una imagen leyendo sus primeros bytes (no
+    confía solo en la extensión del nombre, que puede venir mal o ausente
+    desde un content:// URI de Google Fotos/WhatsApp/Drive/etc.).
+
+    Regresa uno de: "jpeg", "png", "webp", "heic", "heif", "unknown".
+    """
+    try:
+        with open(path, "rb") as f:
+            header = f.read(32)
+    except Exception:
+        return "unknown"
+
+    if header[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if header[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "webp"
+    # HEIC/HEIF: formato contenedor ISO-BMFF, con una caja "ftyp" que
+    # declara el tipo real (heic, heix, hevc, heim, heis, mif1, msf1...).
+    if header[4:8] == b"ftyp":
+        brand = header[8:12]
+        if brand in (b"heic", b"heix", b"hevc", b"heim", b"heis", b"hevx"):
+            return "heic"
+        if brand in (b"mif1", b"msf1"):
+            return "heif"
+    return "unknown"
+
+
+HEIC_MESSAGE = (
+    "Este formato (HEIC/HEIF, típico de iPhone) todavía no es compatible: "
+    "requiere una librería (libheif) que no se puede compilar de forma "
+    "confiable para Android en este proyecto. Convierte la foto a JPG o "
+    "PNG antes de agregarla (muchos celulares tienen esa opción al "
+    "compartir la foto), o cambia el ajuste de la cámara a 'Más compatible'."
+)
+
+
+def validate_image_file(path: str) -> None:
+    """
+    Valida que un archivo sea una imagen realmente decodificable, usando
+    el contenido real (no solo la extensión ni el MIME type que reporta
+    el proveedor de archivos -- Google Fotos, WhatsApp, Drive, etc. a
+    veces entregan MIME types genéricos o incorrectos).
+
+    Lanza ConversionError con un mensaje específico si:
+    - Es HEIC/HEIF (formato real detectado, pero no soportado -- ver honestidad
+      arriba).
+    - No es ninguno de los formatos que Pillow puede decodificar.
+    - El archivo está dañado (Pillow no logra verificarlo).
+    """
+    real_format = detect_real_image_format(path)
+    if real_format in ("heic", "heif"):
+        raise ConversionError(HEIC_MESSAGE)
+
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError as exc:
+        raise ConversionError(f"Falta la librería Pillow: {exc}")
+
+    try:
+        with Image.open(path) as img:
+            img.verify()
+    except UnidentifiedImageError:
+        raise ConversionError(
+            "Ese archivo no es una imagen válida o está dañado "
+            "(no se pudo decodificar su contenido)."
+        )
+    except Exception as exc:
+        raise ConversionError(f"No se pudo verificar la imagen: {exc}")
+
+
 class ConversionError(Exception):
     pass
 

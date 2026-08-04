@@ -45,10 +45,10 @@ FILE_PATHS_XML = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
-def _find_manifest_path(ctx):
+def _find_manifest_path(dist_dir):
     candidates = [
-        os.path.join(ctx.dist_dir, "src", "main", "AndroidManifest.xml"),
-        os.path.join(ctx.dist_dir, "AndroidManifest.xml"),
+        os.path.join(dist_dir, "src", "main", "AndroidManifest.xml"),
+        os.path.join(dist_dir, "AndroidManifest.xml"),
     ]
     for path in candidates:
         if os.path.isfile(path):
@@ -56,25 +56,31 @@ def _find_manifest_path(ctx):
     return None
 
 
-def _find_res_xml_dir(ctx):
-    candidates = [
-        os.path.join(ctx.dist_dir, "src", "main", "res", "xml"),
-        os.path.join(ctx.dist_dir, "res", "xml"),
-    ]
-    for path in candidates:
-        if os.path.isdir(os.path.dirname(path)):
-            return path
-    # Si no existe ninguna carpeta "res" esperada, usar la primera opción
-    # de todos modos (se crea si hace falta).
-    return candidates[0]
-
-
 def before_apk_assemble(toolchain):
     try:
-        ctx = toolchain.ctx
-        manifest_path = _find_manifest_path(ctx)
+        # IMPORTANTE: dentro de _build_package() (el método que python-for-
+        # android usa justo antes de ensamblar el APK, que es donde este
+        # hook se ejecuta), la carpeta de la distribución se guarda en
+        # `toolchain._dist.dist_dir`, NO en `toolchain.ctx.dist_dir` (son
+        # conceptos distintos en esta versión de p4a: ctx.dist_dir es otra
+        # ruta base). Usar la variable equivocada hace que el hook nunca
+        # encuentre el manifest y no aplique el cambio, en silencio.
+        dist_dir = None
+        for candidate_attr in ("_dist", "dist"):
+            dist_obj = getattr(toolchain, candidate_attr, None)
+            if dist_obj is not None and getattr(dist_obj, "dist_dir", None):
+                dist_dir = dist_obj.dist_dir
+                break
+        if not dist_dir:
+            dist_dir = getattr(toolchain.ctx, "dist_dir", None)
+
+        if not dist_dir or not os.path.isdir(dist_dir):
+            print(f"[hook fileprovider] No se encontró dist_dir válido ({dist_dir}); se omite.")
+            return
+
+        manifest_path = _find_manifest_path(dist_dir)
         if not manifest_path:
-            print("[hook fileprovider] No se encontró AndroidManifest.xml; se omite.")
+            print(f"[hook fileprovider] No se encontró AndroidManifest.xml en {dist_dir}; se omite.")
             return
 
         with open(manifest_path, "r", encoding="utf-8") as f:
@@ -89,7 +95,6 @@ def before_apk_assemble(toolchain):
 
         provider_xml = PROVIDER_XML.format(package=package_name)
 
-        # Insertar justo antes del cierre de </application>.
         if "</application>" not in manifest_content:
             print("[hook fileprovider] No se encontró </application>; se omite.")
             return
@@ -101,12 +106,20 @@ def before_apk_assemble(toolchain):
         with open(manifest_path, "w", encoding="utf-8") as f:
             f.write(new_content)
 
-        res_xml_dir = _find_res_xml_dir(ctx)
+        # El build.py de p4a copia el manifest de src/main/AndroidManifest.xml
+        # también a la raíz del dist_dir (para compatibilidad con "ant");
+        # si existe esa copia, la actualizamos igual para que ambas coincidan.
+        root_copy = os.path.join(dist_dir, "AndroidManifest.xml")
+        if os.path.isfile(root_copy) and os.path.abspath(root_copy) != os.path.abspath(manifest_path):
+            with open(root_copy, "w", encoding="utf-8") as f:
+                f.write(new_content)
+
+        res_xml_dir = os.path.join(os.path.dirname(manifest_path), "res", "xml")
         os.makedirs(res_xml_dir, exist_ok=True)
         with open(os.path.join(res_xml_dir, "file_paths.xml"), "w", encoding="utf-8") as f:
             f.write(FILE_PATHS_XML)
 
-        print(f"[hook fileprovider] FileProvider agregado correctamente "
+        print(f"[hook fileprovider] FileProvider agregado correctamente en {manifest_path} "
               f"(authority: {package_name}.fileprovider).")
     except Exception as exc:
         # Nunca queremos que este hook tumbe la compilación completa por un

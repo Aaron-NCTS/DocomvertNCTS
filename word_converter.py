@@ -71,6 +71,11 @@ def convert_word_to_pdf(
 
     try:
         items = docx_lite.read_docx(input_path)
+    except docx_lite.DocxError as exc:
+        # DocxError ya trae un mensaje específico y listo para el usuario
+        # (detecta .doc antiguo, ZIP corrupto, DOCX sin estructura válida,
+        # etc. -- ver docx_lite.py). No hay que envolverlo con más texto.
+        raise ConversionError(str(exc))
     except Exception as exc:
         raise ConversionError(f"No se pudo abrir el documento Word: {exc}")
 

@@ -21,12 +21,31 @@ automáticas, estilos de párrafo avanzados, ni edición de un .docx
 existente conservando su formato -- para esta app no se necesita.
 """
 
+import os
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+# Firma binaria de los archivos .doc antiguos (OLE Compound File Binary
+# Format) -- así se detecta un DOC real sin depender solo de la extensión.
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+class DocxError(Exception):
+    """Error específico al leer un .docx, con un mensaje ya listo para el usuario."""
+
+
+def detect_legacy_doc(path: str) -> bool:
+    """Detecta si un archivo es un .doc binario antiguo (no .docx), leyendo su firma real."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(8)
+        return header == _OLE_MAGIC
+    except Exception:
+        return False
 
 
 def _w(tag: str) -> str:
@@ -60,11 +79,50 @@ def read_docx(path: str) -> List:
     """
     Lee un .docx y regresa una lista de objetos Paragraph y Table, en el
     orden en que aparecen en el documento.
-    """
-    with zipfile.ZipFile(path) as zf:
-        xml_bytes = zf.read("word/document.xml")
 
-    root = ET.fromstring(xml_bytes)
+    Lanza DocxError con un mensaje específico y entendible cuando:
+    - El archivo es en realidad un .doc antiguo (formato OLE binario).
+    - El archivo no es un ZIP válido (está dañado, o no es un documento).
+    - El ZIP es válido pero no tiene la estructura interna de un DOCX real
+      (le falta [Content_Types].xml o word/document.xml) -- esto cubre el
+      caso de un proveedor de archivos que entrega un .zip cualquiera
+      renombrado, o un DOCX corrupto/incompleto.
+    """
+    if not os.path.isfile(path):
+        raise DocxError("El archivo no existe o no se pudo leer.")
+
+    if os.path.getsize(path) == 0:
+        raise DocxError("El archivo está vacío.")
+
+    if detect_legacy_doc(path):
+        raise DocxError(
+            "El formato DOC antiguo todavía no es compatible. Utiliza un archivo DOCX."
+        )
+
+    try:
+        zf = zipfile.ZipFile(path)
+    except zipfile.BadZipFile:
+        raise DocxError("El archivo seleccionado no es un documento DOCX válido.")
+    except Exception as exc:
+        raise DocxError(f"No se pudo abrir el documento: {exc}")
+
+    with zf:
+        names = zf.namelist()
+        if "[Content_Types].xml" not in names or "word/document.xml" not in names:
+            raise DocxError(
+                "El archivo seleccionado no es un documento DOCX válido "
+                "(le falta contenido interno esperado)."
+            )
+        try:
+            xml_bytes = zf.read("word/document.xml")
+        except Exception as exc:
+            raise DocxError(f"No se pudo leer el contenido del documento: {exc}")
+
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError as exc:
+        raise DocxError(f"El documento DOCX tiene contenido XML dañado: {exc}")
+
     body = root.find(_w("body"))
     if body is None:
         return []
