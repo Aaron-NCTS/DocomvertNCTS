@@ -42,6 +42,13 @@ p4a.branch = v2024.01.21
 # código ya tiene manejo de respaldo para ese caso.
 p4a.hook = ./hooks/fileprovider_hook.py
 
+# Recurso que necesita el FileProvider (ver hooks/fileprovider_hook.py).
+# Se incluye desde el INICIO de la compilación (no en una etapa tardía),
+# porque los <provider> de Android se inicializan de inmediato al arrancar
+# el proceso -- si el recurso no está listo a tiempo, la app se cierra al
+# abrir, no solo al usar Abrir/Compartir.
+android.add_resources = android_res/xml/file_paths.xml:xml/file_paths.xml
+
 orientation = portrait
 fullscreen = 0
 

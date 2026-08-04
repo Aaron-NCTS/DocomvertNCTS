@@ -8,7 +8,20 @@ y `android.extra_manifest_application_arguments` solo agrega atributos al
 tag <application>, no elementos hijos). Por eso se necesita este hook:
 se ejecuta justo antes de que Gradle empaquete el APK, cuando el
 AndroidManifest.xml ya fue generado por python-for-android pero el archivo
-en disco todavía se puede editar.
+en disco todavía se puede editar (y ANTES de que Gradle lo lea, ya que
+Gradle corre después, en el mismo comando de compilación).
+
+IMPORTANTE -- causa real de un cierre al abrir detectado en una versión
+anterior: este hook ANTES también creaba el archivo de recursos
+`res/xml/file_paths.xml` en esta misma etapa tardía. Los <provider> de
+Android se inicializan de inmediato al arrancar el proceso de la app (a
+diferencia de una Activity, que solo falla si se abre); si el recurso
+`@xml/file_paths` que referencia el <provider> no estaba compilado a
+tiempo por Gradle, la app se cerraba INMEDIATAMENTE al iniciar, no solo al
+usar Abrir/Compartir. Por eso ese recurso ahora es un archivo estático del
+proyecto (`android_res/xml/file_paths.xml`), incluido desde el inicio de
+la compilación vía `android.add_resources` en buildozer.spec -- este hook
+ya NO crea ningún recurso, solo edita el texto del manifest.
 
 Aviso honesto: la ruta exacta del AndroidManifest.xml generado puede variar
 entre versiones de python-for-android. Este hook prueba varias rutas
@@ -21,8 +34,6 @@ de abrir/compartir automáticamente).
 import os
 import re
 
-PROVIDER_AUTHORITY_ATTR = 'mx.novacoretech.docconvertncts.fileprovider'
-
 PROVIDER_XML = """
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -33,15 +44,6 @@ PROVIDER_XML = """
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
-"""
-
-FILE_PATHS_XML = """<?xml version="1.0" encoding="utf-8"?>
-<paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="external_files" path="." />
-    <external-files-path name="app_external_files" path="." />
-    <files-path name="internal_files" path="." />
-    <cache-path name="cache_files" path="." />
-</paths>
 """
 
 
@@ -113,11 +115,6 @@ def before_apk_assemble(toolchain):
         if os.path.isfile(root_copy) and os.path.abspath(root_copy) != os.path.abspath(manifest_path):
             with open(root_copy, "w", encoding="utf-8") as f:
                 f.write(new_content)
-
-        res_xml_dir = os.path.join(os.path.dirname(manifest_path), "res", "xml")
-        os.makedirs(res_xml_dir, exist_ok=True)
-        with open(os.path.join(res_xml_dir, "file_paths.xml"), "w", encoding="utf-8") as f:
-            f.write(FILE_PATHS_XML)
 
         print(f"[hook fileprovider] FileProvider agregado correctamente en {manifest_path} "
               f"(authority: {package_name}.fileprovider).")
