@@ -24,6 +24,11 @@ version = 1.0.0
 # (varios intentos: receta oficial de p4a incompatible con Python 3.11+,
 # y versiones más nuevas de lxml requieren auto-compilar libiconv de una
 # forma que no funciona en cross-compilación). Ver docx_lite.py.
+# fpdf2 depende de fonttools, Pillow y defusedxml. python-for-android NO
+# resuelve automáticamente las dependencias transitivas de paquetes pip
+# genéricos (misma lección aprendida con lxml/python-docx) -- por eso hay
+# que listarlas explícitamente. Confirmado: fonttools y defusedxml tienen
+# wheel universal (Python puro) y ninguna receta conflictiva en p4a.
 requirements = python3,kivy,plyer,pypdf,fpdf2,pillow,fonttools,defusedxml,pyjnius
 
 # Buildozer clona su propia copia de python-for-android desde GitHub
@@ -32,6 +37,13 @@ requirements = python3,kivy,plyer,pypdf,fpdf2,pillow,fonttools,defusedxml,pyjniu
 # con su propio pip al compilarse para Android. Fijamos un tag anterior y
 # estable que usa Python 3.11.5.
 p4a.branch = v2024.01.21
+
+# Receta local de freetype (ver recipes/freetype/__init__.py): el servidor
+# oficial (download.savannah.gnu.org) empezó a devolver "502 Bad Gateway"
+# de forma consistente. Esta carpeta local usa SourceForge como mirror
+# alterno para el mismo archivo/versión exacta, sin tocar la lógica de
+# compilación original.
+p4a.local_recipes = ./recipes
 
 # --- FileProvider: ELIMINADO (causaba el cierre al abrir) ---
 # Se intentó tres veces declarar un <provider android:name="androidx.core.
