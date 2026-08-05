@@ -68,11 +68,7 @@ MIME_TYPES = {
         "application/msword",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ],
-    "images": [
-        "image/jpeg",
-        "image/png",
-        "image/webp",
-    ],
+    "images": ["image/*"],
 }
 
 _REQUEST_CODES_BY_KIND = {

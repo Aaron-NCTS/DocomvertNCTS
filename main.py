@@ -856,7 +856,9 @@ class DocumentToolScreen(BaseToolScreen):
         kind = info["picker_kind"]
 
         if ANDROID_PICKER_AVAILABLE:
-            open_document(kind, multiple=True, on_selection=self._on_files_selected)
+            # PDF a Word y Word a PDF trabajan con un solo archivo a la vez
+            # (seleccionar uno nuevo sustituye al anterior).
+            open_document(kind, multiple=False, on_selection=self._on_files_selected)
         else:
             try:
                 from plyer import filechooser
@@ -867,7 +869,7 @@ class DocumentToolScreen(BaseToolScreen):
                 }
                 filechooser.open_file(
                     on_selection=self._on_files_selected,
-                    multiple=True,
+                    multiple=False,
                     filters=desktop_filters.get(kind),
                 )
             except Exception as exc:
@@ -876,15 +878,95 @@ class DocumentToolScreen(BaseToolScreen):
     def _on_files_selected(self, selection):
         if not selection:
             return
-        for path in selection:
-            if path in self.files:
-                continue
-            size = get_file_size(path)
-            if self._reject_if_too_large(path, size):
-                continue
-            self.files.append(path)
-            self.display_names[path] = get_display_name(path)
-            self._add_card(path, size)
+        path = selection[0]
+        if path in self.files:
+            return
+
+        size = get_file_size(path)
+        if self._reject_if_too_large(path, size):
+            return
+
+        app = App.get_running_app()
+        try:
+            local_path = resolve_to_local_path(path, temp_cache_dir())
+        except Exception as exc:
+            app.show_info(f"No se pudo acceder al archivo seleccionado ({exc}).")
+            return
+
+        try:
+            self._validate_selected_file(local_path)
+        except Exception as exc:
+            cleanup_temp_file(local_path, temp_cache_dir())
+            self._show_validation_dialog(exc)
+            return
+
+        # Reemplaza cualquier selección anterior (solo se trabaja un
+        # archivo a la vez en PDF a Word / Word a PDF).
+        self.clear_selection()
+
+        self.files.append(path)
+        self.display_names[path] = get_display_name(path)
+        self._local_path_for = getattr(self, "_local_path_for", {})
+        self._local_path_for[path] = local_path
+        self._add_card(path, size)
+
+    def _validate_selected_file(self, local_path):
+        """
+        Valida el archivo YA COPIADO localmente (nunca solo por extensión):
+        para PDF revisa la firma real %PDF- y que pypdf pueda abrirlo; para
+        Word revisa que sea un ZIP con la estructura interna real de un
+        DOCX (o detecta un .doc antiguo). Un proveedor de Android puede
+        entregar un MIME type genérico o incorrecto, así que esta
+        comprobación de contenido real es la que manda, no lo que reportó
+        el selector.
+        """
+        if self.mode == MODE_PDF_TO_WORD:
+            from converter import validate_pdf_quick
+
+            validate_pdf_quick(local_path)
+        else:
+            import docx_lite
+
+            docx_lite.validate_docx_quick(local_path)
+
+    def _show_validation_dialog(self, exc):
+        app = App.get_running_app()
+        message = str(exc)
+
+        if self.mode == MODE_PDF_TO_WORD:
+            if "El archivo está vacío" in message or "no existe" in message:
+                app.show_choice_dialog("Archivo no válido", message, [("Entendido", None)])
+            elif "no se pudo leer" in message.lower() or "dañado" in message.lower() or "PDF dañado" in message:
+                app.show_choice_dialog(
+                    "PDF dañado o no válido",
+                    "No se pudo leer el documento seleccionado. Comprueba que "
+                    "sea un PDF válido e inténtalo nuevamente.",
+                    [("Entendido", None)],
+                )
+            else:
+                app.show_choice_dialog(
+                    "Archivo PDF requerido",
+                    "El archivo seleccionado no es un PDF válido. Para utilizar "
+                    "PDF a Word, selecciona un documento con formato PDF.",
+                    [("Seleccionar otro archivo", self.pick_file), ("Cancelar", None)],
+                )
+        else:
+            if "DOC antiguo" in message:
+                app.show_choice_dialog(
+                    "Formato DOC no compatible",
+                    "Esta versión admite documentos DOCX. Guarda el archivo "
+                    "como DOCX e inténtalo nuevamente.",
+                    [("Entendido", None)],
+                )
+            elif "El archivo está vacío" in message or "no existe" in message:
+                app.show_choice_dialog("Archivo no válido", message, [("Entendido", None)])
+            else:
+                app.show_choice_dialog(
+                    "Documento Word requerido",
+                    "El archivo seleccionado no es un documento DOCX válido. "
+                    "Para utilizar Word a PDF, selecciona un archivo con formato DOCX.",
+                    [("Seleccionar otro archivo", self.pick_file), ("Cancelar", None)],
+                )
 
     def _add_card(self, path, size):
         from kivy.factory import Factory
@@ -942,7 +1024,7 @@ class PhotosToolScreen(BaseToolScreen):
         if not selection:
             return
         added = 0
-        rejected_messages = []
+        rejected_names = []
         for path in selection:
             if path in self.files:
                 continue  # evita duplicados si el usuario vuelve a elegir la misma foto
@@ -952,18 +1034,16 @@ class PhotosToolScreen(BaseToolScreen):
 
             try:
                 local_path = resolve_to_local_path(path, temp_cache_dir())
-            except Exception as exc:
-                rejected_messages.append(
-                    f"{get_display_name(path)}: no se pudo acceder a la imagen ({exc})."
-                )
+            except Exception:
+                rejected_names.append(get_display_name(path))
                 continue
 
             try:
                 from image_converter import validate_image_file
 
                 validate_image_file(local_path)
-            except Exception as exc:
-                rejected_messages.append(f"{get_display_name(path)}: {exc}")
+            except Exception:
+                rejected_names.append(get_display_name(path))
                 cleanup_temp_file(local_path, temp_cache_dir())
                 continue
 
@@ -972,8 +1052,35 @@ class PhotosToolScreen(BaseToolScreen):
             self._add_photo_row(path, local_path)
             added += 1
 
-        if rejected_messages:
-            self.status_text = " | ".join(rejected_messages)
+        app = App.get_running_app()
+
+        if rejected_names and len(selection) == 1 and added == 0:
+            # Un solo archivo seleccionado y no es una imagen válida: el
+            # diálogo específico de "Imagen requerida", con opción directa
+            # de volver a intentarlo.
+            app.show_choice_dialog(
+                "Imagen requerida",
+                "El archivo seleccionado no es una fotografía compatible. Para "
+                "crear un PDF, selecciona una imagen JPG, JPEG, PNG o WEBP.",
+                [("Seleccionar otra imagen", self.pick_images), ("Cancelar", None)],
+            )
+        elif rejected_names:
+            # Selección múltiple con algunas imágenes inválidas: se agregan
+            # las válidas, y se avisa cuáles se rechazaron (solo el nombre,
+            # nunca una ruta técnica).
+            names_list = ", ".join(rejected_names)
+            app.show_choice_dialog(
+                "Algunas imágenes no son compatibles",
+                f"No se pudieron agregar algunas imágenes porque su formato no es "
+                f"compatible. Las imágenes válidas sí fueron agregadas.\n\n"
+                f"Rechazadas: {names_list}",
+                [("Entendido", None)],
+            )
+            self.status_text = (
+                f"{added} imagen(es) agregada(s) correctamente. "
+                f"{len(rejected_names)} archivo(s) no pudieron agregarse porque "
+                f"no son imágenes compatibles."
+            )
         elif added:
             self.status_text = f"{added} foto(s) agregada(s)."
 
@@ -1387,6 +1494,48 @@ class DocConvertApp(App):
 
         popup = Popup(title="DocConvert NCTS", size_hint=(0.85, 0.35))
         popup.content = Label(text=message, text_size=(Window.width * 0.7, None))
+        popup.open()
+
+    @mainthread
+    def show_choice_dialog(self, title, message, actions):
+        """
+        Popup de alerta con botones de acción, ej.:
+            show_choice_dialog("Archivo PDF requerido", "...",
+                                [("Seleccionar otro archivo", callback), ("Cancelar", None)])
+
+        `actions` es una lista de tuplas (texto_boton, callback_o_None).
+        Cada botón cierra el popup y, si tiene callback, lo ejecuta después
+        de cerrarlo. Se usa una fábrica de handlers (_make_handler) en vez
+        de un lambda directo dentro del bucle, precisamente para evitar el
+        bug clásico donde todos los botones terminan apuntando al último
+        callback del bucle.
+        """
+        from kivy.uix.boxlayout import BoxLayout as KBox
+        from kivy.uix.button import Button
+        from kivy.uix.label import Label
+
+        content = KBox(orientation="vertical", spacing=12, padding=12)
+        popup = Popup(title=title, size_hint=(0.88, 0.42), content=content)
+
+        content.add_widget(
+            Label(text=message, text_size=(Window.width * 0.72, None), halign="left")
+        )
+
+        button_row = KBox(size_hint_y=None, height="46dp", spacing=8)
+
+        def _make_handler(callback):
+            def _handler(*_args):
+                popup.dismiss()
+                if callback:
+                    callback()
+            return _handler
+
+        for label, callback in actions:
+            btn = Button(text=label)
+            btn.bind(on_release=_make_handler(callback))
+            button_row.add_widget(btn)
+
+        content.add_widget(button_row)
         popup.open()
 
     # ---------------------------------------------------------- Abrir/compartir

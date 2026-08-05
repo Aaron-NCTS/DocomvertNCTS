@@ -75,18 +75,27 @@ class Table:
 
 
 # --------------------------------------------------------------- Lectura
-def read_docx(path: str) -> List:
-    """
-    Lee un .docx y regresa una lista de objetos Paragraph y Table, en el
-    orden en que aparecen en el documento.
+# Protección básica contra "ZIP bombs": un DOCX normal jamás debería
+# descomprimirse a más de esto. Un archivo que declare mucho más contenido
+# del que es razonable para un documento de texto se rechaza antes de
+# extraer nada.
+_MAX_DOCX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024  # 200 MB
+_MAX_DOCX_ZIP_ENTRIES = 5000
 
-    Lanza DocxError con un mensaje específico y entendible cuando:
-    - El archivo es en realidad un .doc antiguo (formato OLE binario).
-    - El archivo no es un ZIP válido (está dañado, o no es un documento).
-    - El ZIP es válido pero no tiene la estructura interna de un DOCX real
-      (le falta [Content_Types].xml o word/document.xml) -- esto cubre el
-      caso de un proveedor de archivos que entrega un .zip cualquiera
-      renombrado, o un DOCX corrupto/incompleto.
+
+def validate_docx_quick(path: str) -> bytes:
+    """
+    Valida que un archivo sea un DOCX real y utilizable, sin parsear todo
+    su contenido (rápido, pensado para usarse justo al seleccionar el
+    archivo, antes de mostrarlo como "listo para convertir"). Regresa los
+    bytes de word/document.xml si todo está bien.
+
+    Lanza DocxError con un mensaje específico cuando:
+    - El archivo no existe, está vacío, o no se puede leer.
+    - Es en realidad un .doc antiguo (formato OLE binario).
+    - No es un ZIP válido (dañado, o no es un documento en absoluto).
+    - Es un ZIP válido pero no tiene la estructura interna de un DOCX real.
+    - El ZIP declara un tamaño descomprimido irrazonable ("zip bomb").
     """
     if not os.path.isfile(path):
         raise DocxError("El archivo no existe o no se pudo leer.")
@@ -102,21 +111,43 @@ def read_docx(path: str) -> List:
     try:
         zf = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
-        raise DocxError("El archivo seleccionado no es un documento DOCX válido.")
+        raise DocxError(
+            "El archivo seleccionado no pudo leerse como un documento DOCX. "
+            "Selecciona otro archivo e inténtalo nuevamente."
+        )
     except Exception as exc:
         raise DocxError(f"No se pudo abrir el documento: {exc}")
 
     with zf:
+        infos = zf.infolist()
+        if len(infos) > _MAX_DOCX_ZIP_ENTRIES:
+            raise DocxError("El documento tiene una estructura interna inválida o sospechosa.")
+        total_uncompressed = sum(i.file_size for i in infos)
+        if total_uncompressed > _MAX_DOCX_UNCOMPRESSED_BYTES:
+            raise DocxError("El documento tiene un contenido interno demasiado grande para procesarlo.")
+
         names = zf.namelist()
         if "[Content_Types].xml" not in names or "word/document.xml" not in names:
             raise DocxError(
-                "El archivo seleccionado no es un documento DOCX válido "
-                "(le falta contenido interno esperado)."
+                "El archivo seleccionado no pudo leerse como un documento DOCX "
+                "(le falta contenido interno esperado). Selecciona otro archivo "
+                "e inténtalo nuevamente."
             )
         try:
-            xml_bytes = zf.read("word/document.xml")
+            return zf.read("word/document.xml")
         except Exception as exc:
             raise DocxError(f"No se pudo leer el contenido del documento: {exc}")
+
+
+def read_docx(path: str) -> List:
+    """
+    Lee un .docx y regresa una lista de objetos Paragraph y Table, en el
+    orden en que aparecen en el documento.
+
+    Lanza DocxError con un mensaje específico y entendible -- ver
+    validate_docx_quick() para el detalle de cada caso.
+    """
+    xml_bytes = validate_docx_quick(path)
 
     try:
         root = ET.fromstring(xml_bytes)

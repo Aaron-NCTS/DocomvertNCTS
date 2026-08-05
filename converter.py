@@ -30,9 +30,55 @@ ProgressCallback = Optional[Callable[[str], None]]
 _CID_PATTERN = re.compile(r"\(cid:\d+\)")
 _SENTENCE_END = (".", "!", "?", ":", ";")
 
+# Los PDF reales empiezan con esta firma (a veces con unos pocos bytes de
+# basura antes, pero prácticamente siempre aparece en los primeros 1024
+# bytes). No es infalible al 100%, pero descarta con seguridad archivos
+# renombrados como .pdf que en realidad son otra cosa.
+_PDF_MAGIC = b"%PDF-"
+
 
 class ConversionError(Exception):
     pass
+
+
+def validate_pdf_quick(path: str) -> None:
+    """
+    Valida que un archivo sea realmente un PDF utilizable, sin convertirlo
+    todavía (pensado para usarse justo al seleccionarlo). Lanza
+    ConversionError con un mensaje específico cuando:
+    - El archivo no existe, está vacío, o no se puede leer.
+    - No tiene la firma real de un PDF (fue renombrado a .pdf pero es
+      otra cosa: una foto, un Word, un ZIP, etc.).
+    - Tiene la firma correcta pero está dañado y pypdf no puede abrirlo.
+    """
+    if not os.path.isfile(path):
+        raise ConversionError("El archivo no existe o no se pudo leer.")
+
+    if os.path.getsize(path) == 0:
+        raise ConversionError("El archivo está vacío.")
+
+    try:
+        with open(path, "rb") as f:
+            header = f.read(1024)
+    except Exception as exc:
+        raise ConversionError(f"No se pudo leer el archivo: {exc}")
+
+    if _PDF_MAGIC not in header:
+        raise ConversionError(
+            "El archivo seleccionado no es un PDF válido. Para utilizar PDF a Word, "
+            "selecciona un documento con formato PDF."
+        )
+
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(path)
+        _ = len(reader.pages)  # fuerza a pypdf a leer la estructura real
+    except Exception:
+        raise ConversionError(
+            "No se pudo leer el documento seleccionado. Comprueba que sea un "
+            "PDF válido e inténtalo nuevamente."
+        )
 
 
 def has_selectable_text(input_path: str, sample_pages: int = 3) -> bool:

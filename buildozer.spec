@@ -24,7 +24,7 @@ version = 1.0.0
 # (varios intentos: receta oficial de p4a incompatible con Python 3.11+,
 # y versiones más nuevas de lxml requieren auto-compilar libiconv de una
 # forma que no funciona en cross-compilación). Ver docx_lite.py.
-requirements = python3,kivy,plyer,pypdf,fpdf2,pillow,pyjnius
+requirements = python3,kivy,plyer,pypdf,fpdf2,pillow,fonttools,defusedxml,pyjnius
 
 # Buildozer clona su propia copia de python-for-android desde GitHub
 # (ignora la versión instalada por pip). La rama por defecto (master/develop)
